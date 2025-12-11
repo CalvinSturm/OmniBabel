@@ -1,0 +1,6 @@
+faster-whisper
+pyaudiowpatch
+numpy
+scipy
+pyttsx3
+pywin32; sys_platform == 'win32'
