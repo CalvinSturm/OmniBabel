@@ -30,10 +30,6 @@ OmniBabel is designed for users who care about data sovereignty. Unlike browser 
 *   **No API Keys Required:** You do not need to create an account, pay for credits, or hand over personal data to use the tool.
 *   **Works Offline:** Once the models are downloaded, you can disconnect your internet and the tool will continue to function perfectly.
 
-***
-
-### 3. Update the "Features" list (Optional tweak)
-
 ## 🛠️ Prerequisites
 
 1.  **Python 3.8+** installed on your system.
@@ -46,8 +42,8 @@ OmniBabel is designed for users who care about data sovereignty. Unlike browser 
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/yourusername/live-video-translator.git
-    cd live-video-translator
+    git clone https://github.com/yourusername/OmniBabel.git
+    cd OmniBabel
     ```
 
 2.  **Create a Virtual Environment (Recommended):**

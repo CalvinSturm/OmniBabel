@@ -2,6 +2,22 @@
 # Default Defaults
 DEFAULT_MODEL_SIZE = "small"
 DEFAULT_DEVICE = "cpu"
+
+def detect_cuda_device():
+    """Detect if CUDA is available and return appropriate device."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            print("[CONFIG] CUDA detected - defaulting to GPU acceleration")
+            return "cuda"
+        else:
+            print("[CONFIG] CUDA not available - using CPU")
+            return "cpu"
+    except ImportError:
+        print("[CONFIG] PyTorch not available - using CPU")
+        return "cpu"
+        
+DEFAULT_DEVICE = detect_cuda_device()        
 COMPUTE_TYPE = "int8"
 
 # Audio Settings

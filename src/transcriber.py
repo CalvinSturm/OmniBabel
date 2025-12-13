@@ -10,7 +10,7 @@ from faster_whisper import WhisperModel
 from config import DEFAULT_MODEL_SIZE, DEFAULT_DEVICE, TARGET_RATE, BUFFER_THRESHOLD_SECONDS
 
 BANNED_PHRASES = [
-    "thank you for watching", "please subscribe", "hit the like button",
+    "thank you for watching", "English subtitles", "please subscribe", "hit the like button",
     "hit that like button", "subscribe and hit", "thanks for watching",
     "please like and subscribe", "amara.org", "subtitles by",
     "copyright", "all rights reserved", "subscribe to my channel"
@@ -69,7 +69,7 @@ class Transcriber:
         else:
             # FORCE float32 for stability
             print("[AI] APPLYING STABILITY FIX: Using float32 for CUDA")
-            selected_compute_type = "int8"
+            selected_compute_type = "float32"
 
         print("[AI] Waiting for transcriber to pause...")
         with self.model_lock:
