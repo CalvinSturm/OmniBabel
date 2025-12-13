@@ -42,7 +42,7 @@ OmniBabel is designed for users who care about data sovereignty. Unlike browser 
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/yourusername/OmniBabel.git
+    git clone https://github.com/calvinsturm/OmniBabel.git
     cd OmniBabel
     ```
 
