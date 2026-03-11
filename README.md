@@ -4,7 +4,7 @@
 
 OmniBabel is a local AI tool that captures live audio from your computer (movies, streams, Zoom meetings), translates it to English instantly, and displays it as a customizable, transparent subtitle overlay on your screen.
 
-![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?style=flat&logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/python-3.10--3.12-3776AB?style=flat&logo=python&logoColor=white)
 ![AI](https://img.shields.io/badge/AI-Faster_Whisper-green?style=flat)
 ![License](https://img.shields.io/badge/License-MIT-purple?style=flat)
 ![Privacy](https://img.shields.io/badge/Privacy-100%25_Local-darkgreen?style=flat&logo=lock&logoColor=white)
@@ -32,10 +32,9 @@ OmniBabel is designed for users who care about data sovereignty. Unlike browser 
 
 ## 🛠️ Prerequisites
 
-1.  **Python 3.8+** installed on your system.
+1.  **Python 3.10-3.12 on Windows** installed on your system.
 2.  **FFmpeg** (Required for audio processing):
     *   *Windows:* Download from [gyan.dev](https://www.gyan.dev/tt/ffmpeg/git/essentials/), extract, and add the `bin` folder to your System PATH.
-    *   *Mac:* `brew install ffmpeg`
 3.  **(Optional) VB-Cable:** Recommended if you want to use the Text-to-Speech feature to avoid the microphone hearing the computer voice. [Download Here](https://vb-audio.com/Cable/).
 
 ## 📦 Installation
@@ -59,6 +58,9 @@ OmniBabel is designed for users who care about data sovereignty. Unlike browser 
     ```bash
     pip install -r requirements.txt
     ```
+
+4.  **Optional CUDA acceleration:**
+    Install a CUDA-enabled PyTorch build and any matching NVIDIA runtime packages for your environment if you want GPU inference. The base requirements target CPU mode by default.
 
 ## 🚀 Usage
 

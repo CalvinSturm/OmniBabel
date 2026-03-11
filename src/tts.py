@@ -82,9 +82,19 @@ class TTSHandle:
             except Exception as e:
                 print(f"[TTS] Error: {e}")
 
+        try:
+            pythoncom.CoUninitialize()
+        except: pass
+
     def speak(self, text):
         if self.enabled:
             self.queue.put(text)
             
     def stop(self):
         self.running = False
+        try:
+            sd.stop()
+        except Exception:
+            pass
+        if self.thread:
+            self.thread.join(timeout=5)

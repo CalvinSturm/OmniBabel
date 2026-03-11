@@ -1,11 +1,9 @@
 numpy<4.0
+scipy
 pyttsx3
 sounddevice
+soundfile
 faster-whisper
-AudioRecorder
-ctranslate2==4.4.0
-pyaudiowpatch 
-pywin32; sys_platform == 'win32' 
-nvidia-cudnn-cu12
-nvidia-cublas-cu12
-torch==2.1.0+cu121 --index-url https://download.pytorch.org/whl/cu121 
+ctranslate2>=4.6,<5
+pyaudiowpatch; sys_platform == 'win32'
+pywin32; sys_platform == 'win32'

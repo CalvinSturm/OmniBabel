@@ -1,17 +1,20 @@
 import tkinter as tk
 from tkinter import colorchooser, ttk, messagebox
 import sounddevice as sd
-import threading  # <--- Needed for background loading
+import threading
+import queue
 from config import (
     DEFAULT_FONT_SIZE, DEFAULT_TEXT_COLOR, DEFAULT_BG_COLOR, DEFAULT_OPACITY, 
     AVAILABLE_MODELS, AVAILABLE_DEVICES, DEFAULT_MODEL_SIZE, DEFAULT_DEVICE
 )
+from src.dialogs import show_dialog
 
 TRANSPARENT_KEY = "#000001"
 
 class OverlayGUI:
     def __init__(self, on_close_callback, tts_toggle_callback, tts_device_callback, 
-                 tts_voice_callback, get_voices_callback, model_change_callback):
+                 tts_voice_callback, get_voices_callback, model_change_callback,
+                 initial_settings, settings_change_callback):
                  
         self.on_close_callback = on_close_callback
         self.tts_toggle_callback = tts_toggle_callback
@@ -19,25 +22,28 @@ class OverlayGUI:
         self.tts_voice_callback = tts_voice_callback
         self.get_voices_callback = get_voices_callback
         self.model_change_callback = model_change_callback
+        self.settings_change_callback = settings_change_callback
         
         # --- State ---
-        self.font_size = DEFAULT_FONT_SIZE
+        self.font_size = initial_settings.get("font_size", DEFAULT_FONT_SIZE)
         self.text_color = DEFAULT_TEXT_COLOR
         self.bg_color = DEFAULT_BG_COLOR
-        self.opacity = DEFAULT_OPACITY
+        self.opacity = initial_settings.get("opacity", DEFAULT_OPACITY)
         self.wrap_width = 800
-        self.tts_enabled = False
-        self.selected_device_index = None
-        self.selected_voice_id = None
+        self.tts_enabled = initial_settings.get("tts_enabled", False)
+        self.selected_device_index = initial_settings.get("output_device_index")
+        self.selected_voice_id = initial_settings.get("voice_id")
         
         # AI State
-        self.current_model = DEFAULT_MODEL_SIZE
-        self.current_device = DEFAULT_DEVICE
+        self.current_model = initial_settings.get("model_size", DEFAULT_MODEL_SIZE)
+        self.current_device = initial_settings.get("device", DEFAULT_DEVICE)
         self.is_loading_model = False # Lock to prevent double clicks
         
         # Interaction State
         self.settings_window = None
         self.mode = "none"
+        self.pending_ui_actions = queue.SimpleQueue()
+        self.is_stopping = False
 
         # --- Window Setup ---
         self.root = tk.Tk()
@@ -62,6 +68,7 @@ class OverlayGUI:
         self.setup_ui()
         self.root.update()
         self.sync_background_size()
+        self.root.after(100, self.process_pending_updates)
 
     def setup_ui(self):
         self.text_var = tk.StringVar()
@@ -99,6 +106,45 @@ class OverlayGUI:
         self.text_var.set(text)
         self.root.update_idletasks() 
         self.sync_background_size()
+
+    def schedule_text_update(self, text):
+        if not self.is_stopping:
+            self.pending_ui_actions.put(lambda: self.update_text(text))
+
+    def set_tts_enabled(self, is_enabled):
+        self.tts_enabled = is_enabled
+
+    def schedule_ui_action(self, action):
+        if not self.is_stopping:
+            self.pending_ui_actions.put(action)
+
+    def persist_settings(self):
+        self.settings_change_callback({
+            "model_size": self.current_model,
+            "device": self.current_device,
+            "font_size": self.font_size,
+            "opacity": self.opacity,
+            "tts_enabled": self.tts_enabled,
+            "voice_id": self.selected_voice_id,
+            "output_device_index": self.selected_device_index,
+        })
+
+    def show_dialog(self, title, message, level="info"):
+        self.schedule_ui_action(lambda: show_dialog(title, message, level=level, parent=self.root))
+
+    def process_pending_updates(self):
+        if self.is_stopping:
+            return
+        try:
+            while True:
+                action = self.pending_ui_actions.get_nowait()
+                action()
+        except queue.Empty:
+            pass
+        try:
+            self.root.after(100, self.process_pending_updates)
+        except tk.TclError:
+            self.is_stopping = True
 
     # --- Interaction Logic ---
     def on_click_start(self, event):
@@ -192,26 +238,25 @@ class OverlayGUI:
             apply_btn.config(state="disabled")
 
             def run_load():
-                # Call Transcriber logic in background
-                success, msg = self.model_change_callback(m, d)
+                success, msg, active_model, active_device = self.model_change_callback(m, d)
                 
-                # Update UI on Main Thread
                 def update_ui():
                     self.is_loading_model = False
                     apply_btn.config(state="normal")
+                    self.current_model = active_model
+                    self.current_device = active_device
+                    model_combo.set(self.current_model)
+                    device_combo.set(self.current_device)
+                    self.persist_settings()
+
                     if success:
-                        self.current_model = m
-                        self.current_device = d
-                        status_label.config(text=f"Loaded: {m} ({d})", fg="green")
-                        messagebox.showinfo("Success", f"Model updated to {m} on {d}")
+                        status_label.config(text=f"Loaded: {active_model} ({active_device})", fg="green")
+                        messagebox.showinfo("Success", f"Model updated to {active_model} on {active_device}")
                     else:
-                        # Revert GUI dropdowns to what is actually loaded
-                        model_combo.set(self.current_model)
-                        device_combo.set(self.current_device)
-                        status_label.config(text="Load Failed", fg="red")
-                        messagebox.showerror("Model Load Error", msg)
+                        status_label.config(text=f"Loaded fallback: {active_model} ({active_device})", fg="#b36b00")
+                        messagebox.showwarning("Model Load Warning", msg)
                 
-                self.root.after(0, update_ui)
+                self.schedule_ui_action(update_ui)
 
             threading.Thread(target=run_load, daemon=True).start()
         
@@ -245,7 +290,12 @@ class OverlayGUI:
         tk.Label(sw, text="Audio", font=("Arial", 12, "bold")).pack(pady=10)
         
         tts_var = tk.BooleanVar(value=self.tts_enabled) 
-        tk.Checkbutton(sw, text="Read Translations Aloud", variable=tts_var, command=lambda: self.tts_toggle_callback(tts_var.get())).pack()
+        tk.Checkbutton(
+            sw,
+            text="Read Translations Aloud",
+            variable=tts_var,
+            command=lambda: self._on_tts_toggle(tts_var.get())
+        ).pack()
 
         tk.Label(sw, text="Voice Personality:").pack()
         available_voices = self.get_voices_callback() 
@@ -264,6 +314,7 @@ class OverlayGUI:
                 if v["name"] == name:
                     self.selected_voice_id = v["id"]
                     self.tts_voice_callback(v["id"])
+                    self.persist_settings()
                     break
         voice_combo.bind("<<ComboboxSelected>>", on_voice_change)
 
@@ -281,13 +332,20 @@ class OverlayGUI:
             if sel:
                 self.selected_device_index = int(sel.split(":")[0])
                 self.tts_device_callback(self.selected_device_index)
+                self.persist_settings()
         dev_combo.bind("<<ComboboxSelected>>", on_dev_change)
+
+    def _on_tts_toggle(self, is_enabled):
+        self.tts_enabled = is_enabled
+        self.tts_toggle_callback(is_enabled)
+        self.persist_settings()
 
     def set_font_size_from_slider(self, val):
         self.font_size = int(val)
         self.label.config(font=("Helvetica", self.font_size, "bold"))
         self.root.update_idletasks()
         self.sync_background_size()
+        self.persist_settings()
     def set_width_from_slider(self, val):
         self.wrap_width = int(val)
         self.label.config(wraplength=self.wrap_width)
@@ -296,6 +354,7 @@ class OverlayGUI:
     def set_opacity_from_slider(self, val):
         self.opacity = float(val)
         self.apply_opacity()
+        self.persist_settings()
     def pick_color(self):
         c = colorchooser.askcolor(title="Text Color")[1]
         if c: self.text_color = c; self.label.config(fg=c)
@@ -303,4 +362,23 @@ class OverlayGUI:
         c = colorchooser.askcolor(title="Background Color")[1]
         if c: self.bg_color = c; self.bg_window.config(bg=c)
     def start(self): self.root.mainloop()
-    def stop(self): self.bg_window.destroy(); self.root.destroy()
+    def stop(self):
+        if self.is_stopping:
+            return
+        self.is_stopping = True
+        try:
+            if self.settings_window and self.settings_window.winfo_exists():
+                self.settings_window.destroy()
+        except tk.TclError:
+            pass
+        try:
+            if self.bg_window.winfo_exists():
+                self.bg_window.destroy()
+        except tk.TclError:
+            pass
+        try:
+            if self.root.winfo_exists():
+                self.root.quit()
+                self.root.destroy()
+        except tk.TclError:
+            pass

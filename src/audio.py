@@ -5,6 +5,32 @@ import threading
 import time
 from config import TARGET_RATE, CHUNK_SIZE
 
+
+def find_loopback_device(p):
+    wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+    default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+
+    if not default_speakers["isLoopbackDevice"]:
+        for loopback in p.get_loopback_device_info_generator():
+            if default_speakers["name"] in loopback["name"]:
+                return loopback
+    return default_speakers
+
+
+def probe_loopback_device():
+    p = None
+    try:
+        p = pyaudio.PyAudio()
+        device_info = find_loopback_device(p)
+        if not device_info:
+            return False, "No system loopback device was found."
+        return True, device_info["name"]
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if p is not None:
+            p.terminate()
+
 class AudioRecorder:
     def __init__(self, audio_queue):
         self.audio_queue = audio_queue
@@ -15,14 +41,7 @@ class AudioRecorder:
 
     def get_loopback_device(self, p):
         try:
-            wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-            default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-            
-            if not default_speakers["isLoopbackDevice"]:
-                for loopback in p.get_loopback_device_info_generator():
-                    if default_speakers["name"] in loopback["name"]:
-                        return loopback
-            return default_speakers
+            return find_loopback_device(p)
         except Exception as e:
             print(f"[Audio] Error finding system audio: {e}")
             return None
