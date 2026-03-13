@@ -65,6 +65,21 @@ class DummyFrame:
         return self.requested_height
 
 
+class DummyWidget:
+    def __init__(self):
+        self.pack_calls = []
+        self.pack_forget_calls = 0
+
+    def config(self, **kwargs):
+        return None
+
+    def pack(self, **kwargs):
+        self.pack_calls.append(kwargs)
+
+    def pack_forget(self):
+        self.pack_forget_calls += 1
+
+
 class GUIContractsTests(unittest.TestCase):
     def make_gui(self):
         gui = object.__new__(OverlayGUI)
@@ -94,13 +109,15 @@ class GUIContractsTests(unittest.TestCase):
             queued_jobs=0,
             source=None,
         )
+        gui.persist_settings = lambda: None
+        gui.show_status_rows = True
         gui.root = DummyRoot()
         gui.content_frame = DummyFrame()
         gui.sync_background_size = lambda: None
-        gui.label = types.SimpleNamespace(config=lambda **kwargs: None)
-        gui.provisional_label = types.SimpleNamespace(config=lambda **kwargs: None)
-        gui.status_label = types.SimpleNamespace(config=lambda **kwargs: None)
-        gui.playback_label = types.SimpleNamespace(config=lambda **kwargs: None)
+        gui.label = DummyWidget()
+        gui.provisional_label = DummyWidget()
+        gui.status_label = DummyWidget()
+        gui.playback_label = DummyWidget()
         gui.wrap_width = 720
         return gui
 
@@ -167,6 +184,25 @@ class GUIContractsTests(unittest.TestCase):
         self.assertIn("Five.", rendered)
         self.assertIn("Six.", rendered)
         self.assertEqual(rendered.count("\n"), 1)
+
+    def test_set_status_rows_visible_hides_status_widgets(self):
+        gui = self.make_gui()
+
+        gui.set_status_rows_visible(False)
+
+        self.assertFalse(gui.show_status_rows)
+        self.assertEqual(gui.status_label.pack_forget_calls, 1)
+        self.assertEqual(gui.playback_label.pack_forget_calls, 1)
+
+    def test_set_status_rows_visible_shows_status_widgets(self):
+        gui = self.make_gui()
+        gui.show_status_rows = False
+
+        gui.set_status_rows_visible(True)
+
+        self.assertTrue(gui.show_status_rows)
+        self.assertTrue(gui.status_label.pack_calls)
+        self.assertTrue(gui.playback_label.pack_calls)
 
 
 if __name__ == "__main__":

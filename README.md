@@ -127,7 +127,7 @@ In practice, this means the overlay can still show responsive provisional text, 
 * `cancelled`: playback was interrupted or flushed.
 * `error`: synthesis or playback failed.
 
-The overlay shows committed text, provisional suffix, runtime status, and playback status independently.
+The overlay shows committed text and provisional suffix independently, and it can optionally hide the runtime/playback rows for a captions-only view.
 
 ### TTS Scheduler Semantics
 
@@ -146,7 +146,17 @@ Current backend status:
 * `system`: active default via `pyttsx3`; usable in this environment.
 * `kokoro`: runtime synthesis is now wired through `kokoro.KPipeline` with a default `af_heart` voice and 24 kHz mono output.
 
-The settings UI now lets you switch between `system` and `kokoro` backends. Kokoro may download model or voice assets on first use.
+The settings UI now lets you switch between `system` and `kokoro` backends. The repo can also be prewarmed so Whisper and Kokoro assets are already present before the first real session.
+
+### Local Model Storage
+
+OmniBabel now uses a repo-local root `models` directory for downloaded runtime assets:
+
+* `models/whisper`: Faster-Whisper model files such as `large-v3`, `large-v3-turbo`, and `Systran/faster-distil-whisper-large-v3`
+* `models/huggingface`: Hugging Face cache used by Kokoro and related runtime downloads
+* `models/kokoro`: Kokoro-specific local cache path
+
+This keeps runtime downloads inside the project folder instead of spreading them across a global user cache.
 
 ## ⚙️ Configuration & Settings
 
@@ -160,6 +170,7 @@ Right-click the overlay to access the settings menu:
 *   **Font Size & Colors:** Customize the look of the subtitles.
 *   **Max Width:** Control how wide the text box is before wrapping to a new line.
 *   **Opacity:** 0.0 = Floating text only (ghost mode), 1.0 = Solid background box.
+*   **Show Runtime and TTS Status Rows:** Toggle the bottom two overlay rows on or off for a captions-only overlay.
 
 ### Audio & TTS
 *   **Read Aloud:** Toggles the computer voice reading the translations.
@@ -225,6 +236,10 @@ Replay summaries now reflect the streaming contract directly:
 * `append_only_valid` flags whether the replay maintained append-only committed growth.
 
 This is the intended verification path for tuning VAD thresholds, end-of-file flush behavior, preview confirmation behavior, and streaming commit chunking against real clips.
+
+## 📥 Predownloading Models
+
+If you want the app ready before the first live run, predownload the supported Whisper models and warm up Kokoro through the project venv. Assets will land under the repo-local `models` tree described above.
 
 ## 📜 License
 

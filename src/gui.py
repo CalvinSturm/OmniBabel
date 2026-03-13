@@ -76,6 +76,7 @@ class OverlayGUI:
         self.text_color = DEFAULT_TEXT_COLOR
         self.bg_color = DEFAULT_BG_COLOR
         self.opacity = initial_settings.get("opacity", DEFAULT_OPACITY)
+        self.show_status_rows = initial_settings.get("show_status_rows", True)
         self.wrap_width = 720
         self.tts_enabled = initial_settings.get("tts_enabled", False)
         self.selected_tts_backend = initial_settings.get("tts_backend", "system")
@@ -215,6 +216,7 @@ class OverlayGUI:
             anchor="nw",
         )
         self.playback_label.pack(fill="x", pady=(2, 0))
+        self._apply_status_row_visibility()
 
         for window in [self.root, self.bg_window, self.content_frame, self.label, self.provisional_label, self.status_label, self.playback_label]:
             window.bind("<Button-1>", self.on_click_start)
@@ -286,6 +288,14 @@ class OverlayGUI:
         source = self.playback_state.source.value.replace("_", " ").title() if self.playback_state.source else "None"
         active_job = self.playback_state.active_job_id if self.playback_state.active_job_id is not None else "-"
         return f"TTS {state} | {source} | Active: {active_job} | Queued: {self.playback_state.queued_jobs}"
+
+    def _apply_status_row_visibility(self):
+        if self.show_status_rows:
+            self.status_label.pack(fill="x", pady=(10, 0))
+            self.playback_label.pack(fill="x", pady=(2, 0))
+        else:
+            self.status_label.pack_forget()
+            self.playback_label.pack_forget()
 
     def _format_provisional_suffix(self, provisional_suffix):
         normalized = " ".join((provisional_suffix or "").split())
@@ -387,6 +397,7 @@ class OverlayGUI:
                 "debug_logging_enabled": self.debug_logging_enabled,
                 "font_size": self.font_size,
                 "opacity": self.opacity,
+                "show_status_rows": self.show_status_rows,
                 "tts_enabled": self.tts_enabled,
                 "tts_backend": self.selected_tts_backend,
                 "voice_id": self.selected_voice_id,
@@ -716,6 +727,14 @@ class OverlayGUI:
         opacity_slider.set(self.opacity)
         opacity_slider.pack(fill="x", padx=20)
 
+        status_rows_var = tk.BooleanVar(value=self.show_status_rows)
+        tk.Checkbutton(
+            panel,
+            text="Show Runtime and TTS Status Rows",
+            variable=status_rows_var,
+            command=lambda: self.set_status_rows_visible(status_rows_var.get()),
+        ).pack(pady=(4, 6))
+
         tk.Button(panel, text="Change Text Color", command=self.pick_color).pack(pady=2)
         tk.Button(panel, text="Change Background Color", command=self.pick_bg_color).pack(pady=2)
 
@@ -830,6 +849,13 @@ class OverlayGUI:
     def set_opacity_from_slider(self, val):
         self.opacity = float(val)
         self.apply_opacity()
+        self.persist_settings()
+
+    def set_status_rows_visible(self, is_visible):
+        self.show_status_rows = bool(is_visible)
+        self._apply_status_row_visibility()
+        self._sync_overlay_layout()
+        self.sync_background_size()
         self.persist_settings()
 
     def pick_color(self):

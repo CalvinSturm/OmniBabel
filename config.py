@@ -1,4 +1,49 @@
 # --- Configuration ---
+import logging
+import os
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+MODEL_CACHE_DIR = PROJECT_ROOT / "models"
+WHISPER_MODEL_CACHE_DIR = MODEL_CACHE_DIR / "whisper"
+HUGGINGFACE_CACHE_DIR = MODEL_CACHE_DIR / "huggingface"
+HUGGINGFACE_HUB_CACHE_DIR = HUGGINGFACE_CACHE_DIR / "hub"
+TRANSFORMERS_CACHE_DIR = HUGGINGFACE_CACHE_DIR / "transformers"
+KOKORO_MODEL_CACHE_DIR = MODEL_CACHE_DIR / "kokoro"
+
+
+def ensure_local_model_cache_dirs():
+    for directory in (
+        MODEL_CACHE_DIR,
+        WHISPER_MODEL_CACHE_DIR,
+        HUGGINGFACE_CACHE_DIR,
+        HUGGINGFACE_HUB_CACHE_DIR,
+        TRANSFORMERS_CACHE_DIR,
+        KOKORO_MODEL_CACHE_DIR,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    os.environ.setdefault("HF_HOME", str(HUGGINGFACE_CACHE_DIR))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HUGGINGFACE_HUB_CACHE_DIR))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(TRANSFORMERS_CACHE_DIR))
+    os.environ.setdefault("KOKORO_CACHE_DIR", str(KOKORO_MODEL_CACHE_DIR))
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
+def configure_third_party_logging():
+    for logger_name in (
+        "huggingface_hub",
+        "huggingface_hub.file_download",
+        "huggingface_hub.utils._http",
+    ):
+        logging.getLogger(logger_name).setLevel(logging.ERROR)
+
+
+ensure_local_model_cache_dirs()
+configure_third_party_logging()
+
+
 # Default Defaults
 DEFAULT_MODEL_SIZE = "large-v3"
 DEFAULT_DEVICE = "cpu"
@@ -67,6 +112,7 @@ AVAILABLE_MODELS = [
     "small",
     "medium",
     "large-v3",
+    "large-v3-turbo",
     "Systran/faster-distil-whisper-large-v3"
 ]
 

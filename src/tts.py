@@ -15,6 +15,7 @@ import pyttsx3
 import sounddevice as sd
 import soundfile as sf
 
+from config import ensure_local_model_cache_dirs
 from src.streaming_contracts import (
     InterruptPolicy,
     PlaybackState,
@@ -78,6 +79,7 @@ class KokoroBackend(TTSBackend):
     name = "kokoro"
 
     def __init__(self):
+        ensure_local_model_cache_dirs()
         spec = importlib.util.find_spec("kokoro")
         if spec is None:
             raise RuntimeError("Kokoro backend requested but the 'kokoro' package is not installed")

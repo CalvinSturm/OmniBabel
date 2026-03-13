@@ -24,6 +24,7 @@ DEFAULT_SETTINGS = {
     "device": DEFAULT_DEVICE,
     "font_size": DEFAULT_FONT_SIZE,
     "opacity": DEFAULT_OPACITY,
+    "show_status_rows": True,
     "source_language": DEFAULT_SOURCE_LANGUAGE,
     "target_language": DEFAULT_TARGET_LANGUAGE,
     "task": DEFAULT_TASK,

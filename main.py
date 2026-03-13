@@ -110,7 +110,7 @@ def normalize_settings(settings):
     if model_size not in AVAILABLE_MODELS:
         replacement_model = DEFAULT_MODEL_SIZE
         warnings.append(
-            f"Saved model '{model_size}' is not supported for translation. Using '{replacement_model}' instead."
+            f"Saved model '{model_size}' is not supported. Using '{replacement_model}' instead."
         )
         normalized["model_size"] = replacement_model
 

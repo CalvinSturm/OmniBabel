@@ -42,6 +42,7 @@ from config import (
     VAD_FRAME_SECONDS,
     VAD_START_CONSECUTIVE_FRAMES,
     VAD_START_THRESHOLD_MULTIPLIER,
+    WHISPER_MODEL_CACHE_DIR,
 )
 from src.streaming_contracts import ClauseInfo, TranslationUpdate
 
@@ -90,6 +91,7 @@ STREAMING_PREVIEW_COMMIT_HOP_SECONDS = 1.5
 STREAMING_MIN_PREVIEW_SECONDS = 1.0
 STREAMING_PREVIEW_CONFIRMATION_COUNT = 3
 CLAUSE_ENDING_CHARS = ".?!;:"
+FILTERED_OUTPUT_LOG_COOLDOWN_SECONDS = 8.0
 
 
 class Transcriber:
@@ -142,6 +144,7 @@ class Transcriber:
         self.noise_floor = 0.0
         self.ambient_frame_history = []
         self.ambient_calibrated = False
+        self.filtered_log_times = {}
         self.model_lock = threading.Lock()
         self.flush_event = threading.Event()
         self.flush_event.set()
@@ -263,6 +266,7 @@ class Transcriber:
         self.noise_floor = 0.0
         self.ambient_frame_history.clear()
         self.ambient_calibrated = False
+        self.filtered_log_times.clear()
         self._emit_status(
             runtime_state="listening",
             message="Listening for speech",
@@ -301,23 +305,17 @@ class Transcriber:
     def change_model(self, model_size, device):
         print(f"[AI] Request to switch to: {model_size} on {device}")
 
-        if "turbo" in model_size.lower():
-            fallback_model = "large-v3"
-            self.last_model_change_result = (
-                False,
-                "large-v3-turbo is transcription-focused and does not reliably support translation here. "
-                f"Loaded {fallback_model} instead.",
-                fallback_model,
-                device,
-            )
-            model_size = fallback_model
-
         selected_compute_type = self._get_compute_type(device)
         self._emit_status(runtime_state="loading_model", message=f"Loading {model_size} on {device}")
 
         try:
             print(f"[AI] Loading candidate model ({device}) as {selected_compute_type}...")
-            new_model = WhisperModel(model_size, device=device, compute_type=selected_compute_type)
+            new_model = WhisperModel(
+                model_size,
+                device=device,
+                compute_type=selected_compute_type,
+                download_root=str(WHISPER_MODEL_CACHE_DIR),
+            )
             self._swap_model(new_model, model_size, device)
             print(f"[AI] Success: Loaded {model_size}")
             if self.last_model_change_result[2] == model_size and self.last_model_change_result[3] == device:
@@ -344,7 +342,12 @@ class Transcriber:
             if device == "cuda":
                 print("[AI] Attempting fallback to CPU without unloading the active model...")
                 try:
-                    fallback_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+                    fallback_model = WhisperModel(
+                        model_size,
+                        device="cpu",
+                        compute_type="int8",
+                        download_root=str(WHISPER_MODEL_CACHE_DIR),
+                    )
                     self._swap_model(fallback_model, model_size, "cpu")
                     self.last_model_change_result = (
                         False,
@@ -395,6 +398,7 @@ class Transcriber:
             self.noise_floor = 0.0
             self.ambient_frame_history.clear()
             self.ambient_calibrated = False
+            self.filtered_log_times.clear()
 
         if old_model is not None:
             del old_model
@@ -888,7 +892,8 @@ class Transcriber:
                     self._reset_current_utterance_state()
             elif hypothesis_text:
                 self.last_preview_decode_sample = chunk_end_sample
-                print(f"[AI] Filtered suspicious output: {hypothesis_text}")
+                if self._should_log_filtered_output(hypothesis_text):
+                    print(f"[AI] Filtered suspicious output: {hypothesis_text}")
                 self._emit_status(runtime_state="listening", message="Filtered suspicious output")
                 self._debug_log("text_filtered", text=hypothesis_text, is_final=is_final)
                 if is_final:
@@ -987,6 +992,24 @@ class Transcriber:
         lowered = text.lower()
         ascii_text = unicodedata.normalize("NFKD", lowered).encode("ascii", "ignore").decode("ascii")
         return " ".join(ascii_text.split())
+
+    def _should_log_filtered_output(self, text, now_ts=None):
+        normalized_text = self._normalize_filter_text(text)
+        if not normalized_text:
+            return False
+
+        now_ts = time.time() if now_ts is None else now_ts
+        last_logged = self.filtered_log_times.get(normalized_text)
+        if last_logged is not None and (now_ts - last_logged) < FILTERED_OUTPUT_LOG_COOLDOWN_SECONDS:
+            return False
+
+        self.filtered_log_times[normalized_text] = now_ts
+        if len(self.filtered_log_times) > 64:
+            cutoff = now_ts - (FILTERED_OUTPUT_LOG_COOLDOWN_SECONDS * 2)
+            self.filtered_log_times = {
+                phrase: ts for phrase, ts in self.filtered_log_times.items() if ts >= cutoff
+            }
+        return True
 
     def _is_metadata_or_promo_text(self, text):
         normalized_text = self._normalize_filter_text(text)

@@ -51,6 +51,7 @@ Completed:
 
 Remaining:
 13. Improve the streaming agreement algorithm further if a fuller local-agreement engine is still desired
+14. Continue UX polish and settings documentation as needed
 
 ## Current Architecture
 
@@ -112,8 +113,9 @@ File:
 Current behavior:
 - displays committed text in main label
 - displays provisional suffix in a secondary label
-- displays runtime status
-- displays playback state
+- can display runtime status
+- can display playback state
+- supports a captions-only mode that hides the runtime/playback rows
 
 Important methods:
 - `schedule_translation_update(update)`
@@ -141,6 +143,7 @@ Current behavior:
 Backends:
 - `Pyttsx3Backend` is the active default
 - `KokoroBackend` is wired through `kokoro.KPipeline`
+- repo-local model and HF assets now resolve under the project root `models/` tree
 
 Important methods:
 - `submit_translation_update(update)`
@@ -164,6 +167,7 @@ Current behavior:
 - forwards update to GUI
 - forwards update to TTS scheduler
 - playback state comes from TTS callback, not hand-built UI logic
+- settings now persist whether the overlay shows the runtime/playback rows
 
 ## Files Changed in This Refactor
 
@@ -212,6 +216,13 @@ Replay verification should now be interpreted against the streaming contract:
 - `final_committed_text` is the append-only aggregate transcript for the replay clip
 - replay expectations should prefer append-only and monotonic ID checks over exact utterance counts when preview commits are expected
 
+Additional current verification performed during follow-up work:
+
+```bash
+python -m unittest tests.test_phase1_transcriber tests.test_tts_scheduler tests.test_gui_contracts
+python -m py_compile config.py src\transcriber.py src\tts.py src\gui.py src\settings.py main.py
+```
+
 ## Remaining Recommended Work
 
 ### 1. Improve streaming agreement further if needed
@@ -255,9 +266,18 @@ This should be unified later.
 
 The environment now has the `kokoro` package installed in the project venv.
 The backend uses `kokoro.KPipeline` and a default `af_heart` voice.
-First use may still download Hugging Face model or voice assets.
+The repo now supports predownloading runtime assets into the root `models/` tree, and the current environment has already been warmed through that path.
 
-### 4. Replay expectations now follow the streaming contract
+### 4. Repo-local model storage is now explicit
+
+Model assets are no longer just whatever the libraries pick by default.
+Current paths are rooted under:
+
+- `models/whisper`
+- `models/huggingface`
+- `models/kokoro`
+
+### 5. Replay expectations now follow the streaming contract
 
 The replay harness no longer assumes one final emission per utterance.
 It now validates:
@@ -271,14 +291,16 @@ It now validates:
 
 If another agent picks this up, the safest order is:
 
-1. Finish Kokoro integration if neural TTS is the next priority
+1. Do a short end-to-end manual smoke test against the current repo-local `models/` downloads and the captions-only overlay option
 2. If transcript stability still needs work, continue transcriber-side agreement improvements
 3. If clause ownership becomes a maintenance issue, unify `clause_id` responsibility between transcriber and TTS
+4. If the settings surface keeps growing, break the Tk settings window into smaller helper sections
 
 My recommendation:
 
-1. do a short real-app Kokoro smoke test through the GUI
-2. then revisit agreement only if replay/manual UX still shows instability
+1. keep the current architecture and contracts unchanged
+2. do targeted manual smoke testing before any additional refactor
+3. revisit agreement only if replay/manual UX still shows instability
 
 ## Commands Used Frequently
 
@@ -300,10 +322,16 @@ Run app with correct venv:
 run.bat
 ```
 
-## Current Commit
+## Current Commit / Working Tree State
 
-The current refactor work was committed as:
+Recent committed milestones:
 
 ```text
 2edd59d Refactor streaming translation and queued TTS pipeline
+7d8658d Improve streaming agreement and integrate Kokoro TTS
+36dbed5 Fix startup playback callback initialization
+8d01da3 Polish overlay UX and harden runtime filtering
 ```
+
+Important note:
+- the current working tree also includes follow-up changes after those commits, including `large-v3-turbo` runtime selection, captions-only overlay settings, repo-root `models/` storage, and local model predownload support

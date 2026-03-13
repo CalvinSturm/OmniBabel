@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 
 import numpy as np
@@ -9,7 +10,7 @@ import numpy as np
 if "faster_whisper" not in sys.modules:
     sys.modules["faster_whisper"] = types.SimpleNamespace(WhisperModel=object)
 
-from config import TARGET_RATE, VAD_FRAME_SECONDS
+from config import TARGET_RATE, VAD_FRAME_SECONDS, WHISPER_MODEL_CACHE_DIR
 from src.streaming_contracts import TranslationUpdate
 from src.transcriber import Transcriber
 
@@ -48,6 +49,7 @@ class TranscriberPhase1Tests(unittest.TestCase):
         transcriber.noise_floor = 0.0
         transcriber.ambient_frame_history = []
         transcriber.ambient_calibrated = False
+        transcriber.filtered_log_times = {}
         transcriber.model_lock = DummyLock()
         transcriber.model = object()
         transcriber.status = {}
@@ -266,6 +268,26 @@ class TranscriberPhase1Tests(unittest.TestCase):
 
         self.assertEqual(transcriber.last_preview_decode_sample, 3200 + int(TARGET_RATE))
 
+    def test_filtered_output_cooldown_suppresses_repeated_phrase(self):
+        transcriber = self.make_transcriber()
+
+        first = transcriber._should_log_filtered_output("Subtitles by the Amara.org community", now_ts=100.0)
+        second = transcriber._should_log_filtered_output("Subtitles by the Amara.org community", now_ts=103.0)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+
+    def test_filtered_output_cooldown_uses_normalized_phrase_key(self):
+        transcriber = self.make_transcriber()
+
+        first = transcriber._should_log_filtered_output("TELEMUNDO NETWORK captioning by Daniela Martínez", now_ts=100.0)
+        second = transcriber._should_log_filtered_output("telemundo   network captioning by daniela martinez", now_ts=101.0)
+        third = transcriber._should_log_filtered_output("telemundo network captioning by daniela martinez", now_ts=109.0)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertTrue(third)
+
     def test_preview_boundary_preference_trims_to_last_clause_boundary(self):
         transcriber = self.make_transcriber()
 
@@ -330,6 +352,25 @@ class TranscriberPhase1Tests(unittest.TestCase):
         )
         self.assertFalse(
             transcriber.is_hallucination("It's just that you've made the business he founded grow so much.")
+        )
+
+    def test_change_model_uses_project_local_whisper_cache(self):
+        transcriber = self.make_transcriber()
+        transcriber.active_model_size = "base"
+        transcriber.active_device = "cpu"
+        transcriber.last_model_change_result = (True, "Success", "base", "cpu")
+        transcriber._get_compute_type = lambda device: "float32"
+        transcriber._swap_model = lambda new_model, model_size, device: None
+
+        with mock.patch("src.transcriber.WhisperModel", return_value=object()) as whisper_model:
+            result = transcriber.change_model("large-v3", "cuda")
+
+        self.assertEqual(result, (True, "Success", "large-v3", "cuda"))
+        whisper_model.assert_called_once_with(
+            "large-v3",
+            device="cuda",
+            compute_type="float32",
+            download_root=str(WHISPER_MODEL_CACHE_DIR),
         )
 
 
