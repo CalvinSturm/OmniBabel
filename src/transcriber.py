@@ -6,6 +6,7 @@ import re
 import site
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -60,7 +61,9 @@ BANNED_PHRASES = [
     "subscribe to my channel",
     "telemundo network",
     "captioning and subtitling",
+    "captioning by",
     "captioningandsubtitling",
+    "captioningadio",
     "caption max",
     "closed captioning",
     "subtitling.com",
@@ -68,6 +71,15 @@ BANNED_PHRASES = [
     "next on",
     "coming up next",
 ]
+METADATA_KEYWORDS = {
+    "captioning",
+    "subtitling",
+    "subtitles",
+    "telemundo",
+    "network",
+    "amara",
+    "caption",
+}
 
 LANGUAGE_LABELS = dict(LANGUAGE_CHOICES)
 DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent / "omnibabel-debug.jsonl"
@@ -832,6 +844,7 @@ class Transcriber:
                 is_final=is_final,
             )
             hypothesis_text, segment_debug = self._decode_text_from_audio(active_model, audio_chunk, chunk_start_sample)
+            chunk_end_sample = chunk_start_sample + len(audio_chunk)
             self._debug_log(
                 "decode_finished",
                 emitted_text=hypothesis_text,
@@ -857,9 +870,9 @@ class Transcriber:
                 )
                 self._emit_translation_update(update)
                 self.last_preview_hypothesis = hypothesis_text
-                self.last_preview_decode_sample = chunk_start_sample + len(audio_chunk)
+                self.last_preview_decode_sample = chunk_end_sample
                 if update.committed_append:
-                    self.last_preview_commit_sample = chunk_start_sample + len(audio_chunk)
+                    self.last_preview_commit_sample = chunk_end_sample
                 if update.committed_append.strip():
                     print(f"> {update.committed_append.strip()}")
                 self._emit_status(runtime_state="listening", message="Listening for speech")
@@ -874,12 +887,14 @@ class Transcriber:
                 if is_final:
                     self._reset_current_utterance_state()
             elif hypothesis_text:
+                self.last_preview_decode_sample = chunk_end_sample
                 print(f"[AI] Filtered suspicious output: {hypothesis_text}")
                 self._emit_status(runtime_state="listening", message="Filtered suspicious output")
                 self._debug_log("text_filtered", text=hypothesis_text, is_final=is_final)
                 if is_final:
                     self._reset_current_utterance_state()
             else:
+                self.last_preview_decode_sample = chunk_end_sample
                 self._emit_status(runtime_state="listening", message="No new speech emitted")
                 if is_final:
                     self._reset_current_utterance_state()
@@ -958,7 +973,7 @@ class Transcriber:
 
     def is_hallucination(self, text):
         normalized_text = " ".join(text.split())
-        text_lower = normalized_text.lower()
+        text_lower = self._normalize_filter_text(normalized_text)
         for phrase in BANNED_PHRASES:
             if phrase in text_lower:
                 return True
@@ -968,16 +983,29 @@ class Transcriber:
             return True
         return False
 
+    def _normalize_filter_text(self, text):
+        lowered = text.lower()
+        ascii_text = unicodedata.normalize("NFKD", lowered).encode("ascii", "ignore").decode("ascii")
+        return " ".join(ascii_text.split())
+
     def _is_metadata_or_promo_text(self, text):
+        normalized_text = self._normalize_filter_text(text)
         letters = [char for char in text if char.isalpha()]
         uppercase_letters = [char for char in letters if char.isupper()]
         digit_count = sum(char.isdigit() for char in text)
         word_count = len(text.split())
 
-        if DOMAIN_PATTERN.search(text):
+        if DOMAIN_PATTERN.search(normalized_text):
             return True
 
-        if PHONE_PATTERN.search(text) and digit_count >= 6:
+        if PHONE_PATTERN.search(normalized_text) and digit_count >= 6:
+            return True
+
+        keyword_hits = sum(keyword in normalized_text for keyword in METADATA_KEYWORDS)
+        if keyword_hits >= 2:
+            return True
+
+        if " by " in normalized_text and any(keyword in normalized_text for keyword in {"captioning", "subtitles", "subtitling"}):
             return True
 
         if letters:

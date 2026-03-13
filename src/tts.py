@@ -1,10 +1,13 @@
 import importlib
 import importlib.util
+import io
 import os
 import queue
 import re
 import tempfile
 import threading
+import warnings
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 
 import numpy as np
 import pythoncom
@@ -24,6 +27,7 @@ from src.streaming_contracts import (
 CLAUSE_ENDING_CHARS = ".?!;:"
 KOKORO_DEFAULT_SAMPLE_RATE = 24000
 KOKORO_DEFAULT_VOICE = "af_heart"
+KOKORO_REPO_ID = "hexgrad/Kokoro-82M"
 
 
 class TTSBackend:
@@ -83,6 +87,27 @@ class KokoroBackend(TTSBackend):
     def get_voices(self):
         return [{"id": KOKORO_DEFAULT_VOICE, "name": "Kokoro af_heart"}]
 
+    @contextmanager
+    def _suppress_runtime_noise(self):
+        with (
+            warnings.catch_warnings(),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*dropout option adds dropout after all but last recurrent layer.*",
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*torch\.nn\.utils\.weight_norm is deprecated.*",
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*You are sending unauthenticated requests to the HF Hub.*",
+            )
+            yield
+
     def _get_lang_code(self, voice_id):
         voice_name = (voice_id or KOKORO_DEFAULT_VOICE).strip()
         return voice_name[0].lower() if voice_name else "a"
@@ -90,7 +115,12 @@ class KokoroBackend(TTSBackend):
     def _get_pipeline(self, lang_code):
         pipeline = self.pipeline_cache.get(lang_code)
         if pipeline is None:
-            pipeline = self.kokoro.KPipeline(lang_code=lang_code, device="cpu")
+            with self._suppress_runtime_noise():
+                pipeline = self.kokoro.KPipeline(
+                    lang_code=lang_code,
+                    repo_id=KOKORO_REPO_ID,
+                    device="cpu",
+                )
             self.pipeline_cache[lang_code] = pipeline
         return pipeline
 
@@ -102,7 +132,10 @@ class KokoroBackend(TTSBackend):
         pipeline = self._get_pipeline(self._get_lang_code(selected_voice))
         audio_parts = []
 
-        for result in pipeline(text.strip(), voice=selected_voice, split_pattern=r"\n+"):
+        with self._suppress_runtime_noise():
+            results = list(pipeline(text.strip(), voice=selected_voice, split_pattern=r"\n+"))
+
+        for result in results:
             audio = getattr(result, "audio", None)
             if audio is None:
                 continue

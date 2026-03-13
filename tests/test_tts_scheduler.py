@@ -16,7 +16,14 @@ if "soundfile" not in sys.modules:
     sys.modules["soundfile"] = types.SimpleNamespace(read=lambda *args, **kwargs: ([], 16000))
 
 from src.streaming_contracts import ClauseInfo, InterruptPolicy, PlaybackStatus, TTSJob, TTSJobSource, TranslationUpdate
-from src.tts import KOKORO_DEFAULT_SAMPLE_RATE, KOKORO_DEFAULT_VOICE, KokoroBackend, Pyttsx3Backend, TTSHandle
+from src.tts import (
+    KOKORO_DEFAULT_SAMPLE_RATE,
+    KOKORO_DEFAULT_VOICE,
+    KOKORO_REPO_ID,
+    KokoroBackend,
+    Pyttsx3Backend,
+    TTSHandle,
+)
 
 
 class TTSSchedulerTests(unittest.TestCase):
@@ -211,6 +218,22 @@ class TTSSchedulerTests(unittest.TestCase):
 
         self.assertEqual(sample_rate, KOKORO_DEFAULT_SAMPLE_RATE)
         self.assertTrue(np.array_equal(audio, np.array([0.1, 0.2, 0.3], dtype=np.float32)))
+
+    def test_kokoro_backend_builds_pipeline_with_explicit_repo_id(self):
+        backend = object.__new__(KokoroBackend)
+        backend.pipeline_cache = {}
+        backend.kokoro = mock.Mock()
+        backend.kokoro.KPipeline.return_value = "pipeline"
+        backend._suppress_runtime_noise = KokoroBackend._suppress_runtime_noise.__get__(backend, KokoroBackend)
+
+        pipeline = KokoroBackend._get_pipeline(backend, "a")
+
+        self.assertEqual(pipeline, "pipeline")
+        backend.kokoro.KPipeline.assert_called_once_with(
+            lang_code="a",
+            repo_id=KOKORO_REPO_ID,
+            device="cpu",
+        )
 
     def test_unknown_backend_raises(self):
         handle = self.make_handle()

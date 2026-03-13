@@ -16,6 +16,13 @@ from src.transcriber import Transcriber
 
 class TranscriberPhase1Tests(unittest.TestCase):
     def make_transcriber(self):
+        class DummyLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
         transcriber = object.__new__(Transcriber)
         transcriber.user_source_language = "auto"
         transcriber.target_language = "en"
@@ -41,6 +48,8 @@ class TranscriberPhase1Tests(unittest.TestCase):
         transcriber.noise_floor = 0.0
         transcriber.ambient_frame_history = []
         transcriber.ambient_calibrated = False
+        transcriber.model_lock = DummyLock()
+        transcriber.model = object()
         transcriber.status = {}
         transcriber.status_updates = []
         transcriber.status_callback = lambda payload: transcriber.status_updates.append(payload)
@@ -245,6 +254,18 @@ class TranscriberPhase1Tests(unittest.TestCase):
 
         self.assertEqual(stable, "alpha beta")
 
+    def test_filtered_preview_still_advances_preview_decode_sample(self):
+        transcriber = self.make_transcriber()
+        transcriber._decode_text_from_audio = lambda active_model, audio_chunk, chunk_start_sample: (
+            "Subtitles by the Amara.org community",
+            [],
+        )
+        transcriber.is_hallucination = lambda text: True
+
+        transcriber._process_audio_chunk(np.zeros(int(TARGET_RATE), dtype=np.float32), 3200, is_final=False)
+
+        self.assertEqual(transcriber.last_preview_decode_sample, 3200 + int(TARGET_RATE))
+
     def test_preview_boundary_preference_trims_to_last_clause_boundary(self):
         transcriber = self.make_transcriber()
 
@@ -294,6 +315,11 @@ class TranscriberPhase1Tests(unittest.TestCase):
             transcriber.is_hallucination("TELEMUNDO NETWORK captioningandsubtitling.com 887-3060")
         )
         self.assertTrue(transcriber.is_hallucination("Subtitles by the Amara.org community"))
+        self.assertTrue(transcriber.is_hallucination("LADY ALTAGRACIA"))
+        self.assertTrue(transcriber.is_hallucination("TELEMUNDO NETWORK captioning by Daniela Martinez"))
+        self.assertTrue(transcriber.is_hallucination("TELEMUNDO NETWORK captioning by Daniela Martinez"))
+        self.assertTrue(transcriber.is_hallucination("TELEMUNDO NETWORK captioning by Daniela Martínez"))
+        self.assertTrue(transcriber.is_hallucination("TELEMUNDO NETWORK captioningadio.com 887-3060"))
 
     def test_hallucination_filter_keeps_dialogue_lines(self):
         transcriber = self.make_transcriber()

@@ -1,4 +1,5 @@
 import queue
+import re
 import threading
 import tkinter as tk
 from tkinter import colorchooser, messagebox, ttk
@@ -35,6 +36,14 @@ LANGUAGE_CODES_BY_LABEL = {label: code for code, label in LANGUAGE_CHOICES}
 TARGET_LABELS = dict(TARGET_LANGUAGE_CHOICES)
 TASK_LABELS = dict(TASK_CHOICES)
 TASK_CODES_BY_LABEL = {label: code for code, label in TASK_CHOICES}
+OVERLAY_MIN_WIDTH = 620
+OVERLAY_MAX_HEIGHT = 420
+OVERLAY_MIN_HEIGHT = 160
+OVERLAY_SIDE_PADDING = 18
+OVERLAY_VERTICAL_PADDING = 14
+PROVISIONAL_PREVIEW_MAX_CHARS = 160
+COMMITTED_DISPLAY_MAX_SEGMENTS = 2
+COMMITTED_DISPLAY_MAX_CHARS = 220
 
 
 class OverlayGUI:
@@ -67,7 +76,7 @@ class OverlayGUI:
         self.text_color = DEFAULT_TEXT_COLOR
         self.bg_color = DEFAULT_BG_COLOR
         self.opacity = initial_settings.get("opacity", DEFAULT_OPACITY)
-        self.wrap_width = 800
+        self.wrap_width = 720
         self.tts_enabled = initial_settings.get("tts_enabled", False)
         self.selected_tts_backend = initial_settings.get("tts_backend", "system")
         self.selected_device_index = initial_settings.get("output_device_index")
@@ -136,7 +145,7 @@ class OverlayGUI:
         self.bg_window.attributes("-topmost", True)
         self.bg_window.attributes("-alpha", self.opacity)
 
-        start_geo = "900x180+100+700"
+        start_geo = "760x200+100+700"
         self.root.geometry(start_geo)
         self.bg_window.geometry(start_geo)
 
@@ -146,13 +155,18 @@ class OverlayGUI:
         self.root.after(100, self.process_pending_updates)
 
     def setup_ui(self):
-        self.text_var = tk.StringVar(value="Waiting for audio...\n(Shift+Drag Up/Down to Resize)")
+        self.text_var = tk.StringVar(value="Waiting for audio")
         self.provisional_text_var = tk.StringVar(value="")
         self.runtime_status_var = tk.StringVar(value=self._format_runtime_status())
         self.playback_status_var = tk.StringVar(value=self._format_playback_status())
 
         self.content_frame = tk.Frame(self.root, bg=TRANSPARENT_KEY)
-        self.content_frame.pack(expand=True, fill="both", padx=10, pady=10)
+        self.content_frame.pack(
+            expand=True,
+            fill="both",
+            padx=OVERLAY_SIDE_PADDING,
+            pady=OVERLAY_VERTICAL_PADDING,
+        )
 
         self.label = tk.Label(
             self.content_frame,
@@ -161,7 +175,8 @@ class OverlayGUI:
             fg=self.text_color,
             bg=TRANSPARENT_KEY,
             wraplength=self.wrap_width,
-            justify="center",
+            justify="left",
+            anchor="nw",
         )
         self.label.pack(expand=True, fill="both")
 
@@ -172,9 +187,10 @@ class OverlayGUI:
             fg="#d0d0d0",
             bg=TRANSPARENT_KEY,
             wraplength=self.wrap_width,
-            justify="center",
+            justify="left",
+            anchor="nw",
         )
-        self.provisional_label.pack(fill="x", pady=(2, 0))
+        self.provisional_label.pack(fill="x", pady=(8, 0))
 
         self.status_label = tk.Label(
             self.content_frame,
@@ -183,9 +199,10 @@ class OverlayGUI:
             fg="#d9d9d9",
             bg=TRANSPARENT_KEY,
             wraplength=self.wrap_width,
-            justify="center",
+            justify="left",
+            anchor="nw",
         )
-        self.status_label.pack(fill="x", pady=(4, 0))
+        self.status_label.pack(fill="x", pady=(10, 0))
 
         self.playback_label = tk.Label(
             self.content_frame,
@@ -194,7 +211,8 @@ class OverlayGUI:
             fg="#bfbfbf",
             bg=TRANSPARENT_KEY,
             wraplength=self.wrap_width,
-            justify="center",
+            justify="left",
+            anchor="nw",
         )
         self.playback_label.pack(fill="x", pady=(2, 0))
 
@@ -222,6 +240,26 @@ class OverlayGUI:
         except Exception:
             pass
 
+    def _sync_overlay_layout(self):
+        try:
+            current_width = max(self.root.winfo_width(), OVERLAY_MIN_WIDTH)
+            text_wrap = max(current_width - (OVERLAY_SIDE_PADDING * 2), 320)
+            if text_wrap != self.wrap_width:
+                self.wrap_width = text_wrap
+                self.label.config(wraplength=self.wrap_width)
+                self.provisional_label.config(wraplength=self.wrap_width)
+                self.status_label.config(wraplength=self.wrap_width)
+                self.playback_label.config(wraplength=self.wrap_width)
+
+            self.root.update_idletasks()
+            requested_height = self.content_frame.winfo_reqheight() + (OVERLAY_VERTICAL_PADDING * 2)
+            target_height = max(OVERLAY_MIN_HEIGHT, min(requested_height, OVERLAY_MAX_HEIGHT))
+            current_height = self.root.winfo_height()
+            if current_height != target_height:
+                self.root.geometry(f"{current_width}x{target_height}+{self.root.winfo_x()}+{self.root.winfo_y()}")
+        except Exception:
+            pass
+
     def _format_runtime_status(self):
         source_code = self.runtime_status.get("source_language", DEFAULT_SOURCE_LANGUAGE)
         source_label = LANGUAGE_LABELS.get(source_code, source_code)
@@ -238,32 +276,55 @@ class OverlayGUI:
         ambient_calibrated = bool(self.runtime_status.get("ambient_calibrated", False))
         ambient_label = "Calibrated" if ambient_calibrated else "Calibrating"
         return (
-            f"{runtime_state} | Source: {source_label} | Detected: {detected_label} | "
-            f"Output: {target_label} | Mode: {task_label} | Model: {model} ({device}) | "
-            f"Ambient: {ambient_label} | Floor: {noise_floor:.4f}"
+            f"{runtime_state} | {source_label} -> {target_label} | "
+            f"Detected: {detected_label} | {task_label} | {model} ({device}) | "
+            f"{ambient_label} {noise_floor:.4f}"
         )
 
     def _format_playback_status(self):
         state = self.playback_state.status.value.replace("_", " ").title()
         source = self.playback_state.source.value.replace("_", " ").title() if self.playback_state.source else "None"
         active_job = self.playback_state.active_job_id if self.playback_state.active_job_id is not None else "-"
-        return f"TTS: {state} | Source: {source} | Active: {active_job} | Queued: {self.playback_state.queued_jobs}"
+        return f"TTS {state} | {source} | Active: {active_job} | Queued: {self.playback_state.queued_jobs}"
+
+    def _format_provisional_suffix(self, provisional_suffix):
+        normalized = " ".join((provisional_suffix or "").split())
+        if len(normalized) <= PROVISIONAL_PREVIEW_MAX_CHARS:
+            return normalized
+        return f"...{normalized[-PROVISIONAL_PREVIEW_MAX_CHARS:]}"
+
+    def _format_committed_display(self, committed_text):
+        normalized = (committed_text or "").strip()
+        if not normalized:
+            return ""
+
+        segments = [
+            segment.strip()
+            for segment in re.split(r"(?<=[.!?])\s+|\n+", normalized)
+            if segment.strip()
+        ]
+        if len(segments) > COMMITTED_DISPLAY_MAX_SEGMENTS:
+            return "\n".join(segments[-COMMITTED_DISPLAY_MAX_SEGMENTS:])
+        if len(normalized) > COMMITTED_DISPLAY_MAX_CHARS:
+            return f"...{normalized[-COMMITTED_DISPLAY_MAX_CHARS:]}"
+        return normalized
 
     def _refresh_text_display(self):
         if self.committed_text:
-            self.text_var.set(self.committed_text)
+            self.text_var.set(self._format_committed_display(self.committed_text))
         else:
-            self.text_var.set("Waiting for audio...\n(Shift+Drag Up/Down to Resize)")
+            self.text_var.set("Waiting for audio")
 
         provisional_suffix = self.provisional_text
         if self.committed_text and provisional_suffix.startswith(self.committed_text):
             provisional_suffix = provisional_suffix[len(self.committed_text):].lstrip()
+        provisional_suffix = self._format_provisional_suffix(provisional_suffix)
         if provisional_suffix and provisional_suffix != self.committed_text:
             self.provisional_text_var.set(f"[provisional] {provisional_suffix}")
         else:
             self.provisional_text_var.set("")
 
-        self.root.update_idletasks()
+        self._sync_overlay_layout()
         self.sync_background_size()
 
     def update_translation(self, update):
@@ -287,7 +348,7 @@ class OverlayGUI:
     def update_runtime_status(self, status):
         self.runtime_status.update(status)
         self.runtime_status_var.set(self._format_runtime_status())
-        self.root.update_idletasks()
+        self._sync_overlay_layout()
         self.sync_background_size()
 
     def schedule_runtime_status_update(self, status):
@@ -297,7 +358,7 @@ class OverlayGUI:
     def update_playback_state(self, playback_state):
         self.playback_state = playback_state
         self.playback_status_var.set(self._format_playback_status())
-        self.root.update_idletasks()
+        self._sync_overlay_layout()
         self.sync_background_size()
 
     def schedule_playback_state_update(self, playback_state):
@@ -380,7 +441,7 @@ class OverlayGUI:
                 self.provisional_label.config(font=("Helvetica", max(12, self.font_size // 2), "italic"))
                 self.status_label.config(font=("Helvetica", max(10, self.font_size // 3)))
                 self.playback_label.config(font=("Helvetica", max(9, self.font_size // 4)))
-                self.root.update_idletasks()
+                self._sync_overlay_layout()
                 self.sync_background_size()
 
     def on_click_release(self, event):
@@ -402,6 +463,22 @@ class OverlayGUI:
         except Exception:
             return []
 
+    def _bind_scroll_wheel(self, widget, canvas):
+        def on_mousewheel(event):
+            delta = event.delta
+            if delta == 0 and hasattr(event, "num"):
+                if event.num == 4:
+                    delta = 120
+                elif event.num == 5:
+                    delta = -120
+            if delta:
+                canvas.yview_scroll(int(-delta / 120), "units")
+                return "break"
+            return None
+
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(sequence, on_mousewheel, add="+")
+
     def open_settings(self, event=None):
         if self.settings_window:
             self.settings_window.lift()
@@ -409,26 +486,58 @@ class OverlayGUI:
 
         sw = tk.Toplevel(self.root)
         sw.title("Settings")
-        sw.geometry("420x820")
+        sw.geometry("520x760")
+        sw.minsize(460, 520)
         sw.attributes("-topmost", True)
         self.settings_window = sw
         sw.protocol("WM_DELETE_WINDOW", lambda: [sw.destroy(), setattr(self, "settings_window", None)])
+        sw.grid_rowconfigure(0, weight=1)
+        sw.grid_columnconfigure(0, weight=1)
 
-        tk.Label(sw, text="AI Model Settings", font=("Arial", 12, "bold")).pack(pady=10)
+        container = tk.Frame(sw)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
 
-        tk.Label(sw, text="Model Size").pack()
-        model_combo = ttk.Combobox(sw, values=AVAILABLE_MODELS, state="readonly", width=30)
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        content = tk.Frame(canvas)
+
+        content.bind(
+            "<Configure>",
+            lambda event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(content_window, width=event.width),
+        )
+
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        self._bind_scroll_wheel(sw, canvas)
+        self._bind_scroll_wheel(canvas, canvas)
+        self._bind_scroll_wheel(content, canvas)
+
+        panel = content
+
+        tk.Label(panel, text="AI Model Settings", font=("Arial", 12, "bold")).pack(pady=10)
+
+        tk.Label(panel, text="Model Size").pack()
+        model_combo = ttk.Combobox(panel, values=AVAILABLE_MODELS, state="readonly", width=30)
         model_combo.set(self.current_model)
         model_combo.pack(pady=5)
 
-        tk.Label(sw, text="Processing Device").pack()
-        device_combo = ttk.Combobox(sw, values=AVAILABLE_DEVICES, state="readonly", width=30)
+        tk.Label(panel, text="Processing Device").pack()
+        device_combo = ttk.Combobox(panel, values=AVAILABLE_DEVICES, state="readonly", width=30)
         device_combo.set(self.current_device)
         device_combo.pack(pady=5)
 
-        tk.Label(sw, text="Source Language").pack()
+        tk.Label(panel, text="Source Language").pack()
         source_combo = ttk.Combobox(
-            sw,
+            panel,
             values=[label for _, label in LANGUAGE_CHOICES],
             state="readonly",
             width=30,
@@ -436,9 +545,9 @@ class OverlayGUI:
         source_combo.set(LANGUAGE_LABELS.get(self.current_source_language, LANGUAGE_LABELS[DEFAULT_SOURCE_LANGUAGE]))
         source_combo.pack(pady=5)
 
-        tk.Label(sw, text="Output Mode").pack()
+        tk.Label(panel, text="Output Mode").pack()
         task_combo = ttk.Combobox(
-            sw,
+            panel,
             values=[label for _, label in TASK_CHOICES],
             state="readonly",
             width=30,
@@ -446,8 +555,8 @@ class OverlayGUI:
         task_combo.set(TASK_LABELS.get(self.current_task, TASK_LABELS[DEFAULT_TASK]))
         task_combo.pack(pady=5)
 
-        tk.Label(sw, text="Target Output").pack()
-        target_combo = ttk.Combobox(sw, state="readonly", width=30)
+        tk.Label(panel, text="Target Output").pack()
+        target_combo = ttk.Combobox(panel, state="readonly", width=30)
         target_combo.pack(pady=5)
 
         def sync_target_combo():
@@ -459,42 +568,42 @@ class OverlayGUI:
         task_combo.bind("<<ComboboxSelected>>", lambda event: sync_target_combo())
         sync_target_combo()
 
-        status_label = tk.Label(sw, text="", fg="blue")
+        status_label = tk.Label(panel, text="", fg="blue")
         status_label.pack()
 
         runtime_label = tk.Label(
-            sw,
+            panel,
             textvariable=self.runtime_status_var,
-            wraplength=360,
+            wraplength=440,
             justify="left",
             fg="#333333",
         )
         runtime_label.pack(pady=(4, 8), padx=16)
 
-        tk.Label(sw, text="Detection Tuning", font=("Arial", 12, "bold")).pack(pady=(4, 4))
+        tk.Label(panel, text="Detection Tuning", font=("Arial", 12, "bold")).pack(pady=(4, 4))
 
-        tk.Label(sw, text="VAD Energy Threshold").pack()
-        vad_slider = tk.Scale(sw, from_=0.001, to=0.05, resolution=0.001, orient="horizontal")
+        tk.Label(panel, text="VAD Energy Threshold").pack()
+        vad_slider = tk.Scale(panel, from_=0.001, to=0.05, resolution=0.001, orient="horizontal")
         vad_slider.set(self.current_vad_energy_threshold)
         vad_slider.pack(fill="x", padx=20)
 
-        tk.Label(sw, text="End Silence Seconds").pack()
-        silence_slider = tk.Scale(sw, from_=0.1, to=1.5, resolution=0.05, orient="horizontal")
+        tk.Label(panel, text="End Silence Seconds").pack()
+        silence_slider = tk.Scale(panel, from_=0.1, to=1.5, resolution=0.05, orient="horizontal")
         silence_slider.set(self.current_utterance_end_silence_seconds)
         silence_slider.pack(fill="x", padx=20)
 
-        tk.Label(sw, text="Min Utterance Seconds").pack()
-        min_utterance_slider = tk.Scale(sw, from_=0.2, to=5.0, resolution=0.1, orient="horizontal")
+        tk.Label(panel, text="Min Utterance Seconds").pack()
+        min_utterance_slider = tk.Scale(panel, from_=0.2, to=5.0, resolution=0.1, orient="horizontal")
         min_utterance_slider.set(self.current_min_utterance_seconds)
         min_utterance_slider.pack(fill="x", padx=20)
 
-        tk.Label(sw, text="Max Utterance Seconds").pack()
-        max_utterance_slider = tk.Scale(sw, from_=1.0, to=20.0, resolution=0.5, orient="horizontal")
+        tk.Label(panel, text="Max Utterance Seconds").pack()
+        max_utterance_slider = tk.Scale(panel, from_=1.0, to=20.0, resolution=0.5, orient="horizontal")
         max_utterance_slider.set(self.current_max_utterance_seconds)
         max_utterance_slider.pack(fill="x", padx=20)
 
         debug_var = tk.BooleanVar(value=self.debug_logging_enabled)
-        tk.Checkbutton(sw, text="Enable Debug Logging", variable=debug_var).pack(pady=(4, 6))
+        tk.Checkbutton(panel, text="Enable Debug Logging", variable=debug_var).pack(pady=(4, 6))
 
         def apply_ai_settings():
             if self.is_loading_model:
@@ -585,44 +694,44 @@ class OverlayGUI:
 
             threading.Thread(target=run_load, daemon=True).start()
 
-        apply_btn = tk.Button(sw, text="Apply Changes", command=apply_ai_settings, bg="#dddddd")
+        apply_btn = tk.Button(panel, text="Apply Changes", command=apply_ai_settings, bg="#dddddd")
         apply_btn.pack(pady=5)
 
-        tk.Label(sw, text="-------------------------").pack(pady=5)
+        ttk.Separator(panel, orient="horizontal").pack(fill="x", padx=16, pady=10)
 
-        tk.Label(sw, text="Appearance", font=("Arial", 12, "bold")).pack(pady=5)
+        tk.Label(panel, text="Appearance", font=("Arial", 12, "bold")).pack(pady=5)
 
-        tk.Label(sw, text="Font Size").pack()
-        size_slider = tk.Scale(sw, from_=10, to=100, orient="horizontal", command=self.set_font_size_from_slider)
+        tk.Label(panel, text="Font Size").pack()
+        size_slider = tk.Scale(panel, from_=10, to=100, orient="horizontal", command=self.set_font_size_from_slider)
         size_slider.set(self.font_size)
         size_slider.pack(fill="x", padx=20)
 
-        tk.Label(sw, text="Max Width").pack()
-        width_slider = tk.Scale(sw, from_=300, to=1800, orient="horizontal", command=self.set_width_from_slider)
+        tk.Label(panel, text="Max Width").pack()
+        width_slider = tk.Scale(panel, from_=300, to=1800, orient="horizontal", command=self.set_width_from_slider)
         width_slider.set(self.wrap_width)
         width_slider.pack(fill="x", padx=20)
 
-        tk.Label(sw, text="Opacity").pack()
-        opacity_slider = tk.Scale(sw, from_=0.0, to=1.0, resolution=0.05, orient="horizontal", command=self.set_opacity_from_slider)
+        tk.Label(panel, text="Opacity").pack()
+        opacity_slider = tk.Scale(panel, from_=0.0, to=1.0, resolution=0.05, orient="horizontal", command=self.set_opacity_from_slider)
         opacity_slider.set(self.opacity)
         opacity_slider.pack(fill="x", padx=20)
 
-        tk.Button(sw, text="Change Text Color", command=self.pick_color).pack(pady=2)
-        tk.Button(sw, text="Change Background Color", command=self.pick_bg_color).pack(pady=2)
+        tk.Button(panel, text="Change Text Color", command=self.pick_color).pack(pady=2)
+        tk.Button(panel, text="Change Background Color", command=self.pick_bg_color).pack(pady=2)
 
-        tk.Label(sw, text="Audio", font=("Arial", 12, "bold")).pack(pady=10)
+        tk.Label(panel, text="Audio", font=("Arial", 12, "bold")).pack(pady=10)
 
         tts_var = tk.BooleanVar(value=self.tts_enabled)
         tk.Checkbutton(
-            sw,
+            panel,
             text="Read Output Aloud",
             variable=tts_var,
             command=lambda: self._on_tts_toggle(tts_var.get()),
         ).pack()
 
-        tk.Label(sw, text="TTS Backend:").pack()
+        tk.Label(panel, text="TTS Backend:").pack()
         backend_options = self.get_tts_backends_callback()
-        backend_combo = ttk.Combobox(sw, values=backend_options, state="readonly", width=40)
+        backend_combo = ttk.Combobox(panel, values=backend_options, state="readonly", width=40)
         backend_combo.pack(pady=2, padx=10)
         if self.selected_tts_backend in backend_options:
             backend_combo.set(self.selected_tts_backend)
@@ -630,9 +739,9 @@ class OverlayGUI:
             backend_combo.current(0)
             self.selected_tts_backend = backend_options[0]
 
-        tk.Label(sw, text="Voice Personality:").pack()
+        tk.Label(panel, text="Voice Personality:").pack()
         available_voices = self.get_voices_callback()
-        voice_combo = ttk.Combobox(sw, values=[], state="readonly", width=40)
+        voice_combo = ttk.Combobox(panel, values=[], state="readonly", width=40)
         voice_combo.pack(pady=2, padx=10)
 
         def refresh_voice_combo(voices, preferred_voice_id=None):
@@ -676,9 +785,9 @@ class OverlayGUI:
 
         backend_combo.bind("<<ComboboxSelected>>", on_backend_change)
 
-        tk.Label(sw, text="Output Device:").pack()
+        tk.Label(panel, text="Output Device:").pack()
         device_list = self.get_audio_devices()
-        output_device_combo = ttk.Combobox(sw, values=device_list, width=40, state="readonly")
+        output_device_combo = ttk.Combobox(panel, values=device_list, width=40, state="readonly")
         output_device_combo.pack(pady=2, padx=10)
 
         if self.selected_device_index is not None:
@@ -694,6 +803,7 @@ class OverlayGUI:
                 self.persist_settings()
 
         output_device_combo.bind("<<ComboboxSelected>>", on_output_device_change)
+        tk.Frame(panel, height=12).pack()
 
     def _on_tts_toggle(self, is_enabled):
         self.tts_enabled = is_enabled
@@ -706,17 +816,15 @@ class OverlayGUI:
         self.provisional_label.config(font=("Helvetica", max(12, self.font_size // 2), "italic"))
         self.status_label.config(font=("Helvetica", max(10, self.font_size // 3)))
         self.playback_label.config(font=("Helvetica", max(9, self.font_size // 4)))
-        self.root.update_idletasks()
+        self._sync_overlay_layout()
         self.sync_background_size()
         self.persist_settings()
 
     def set_width_from_slider(self, val):
         self.wrap_width = int(val)
-        self.label.config(wraplength=self.wrap_width)
-        self.provisional_label.config(wraplength=self.wrap_width)
-        self.status_label.config(wraplength=self.wrap_width)
-        self.playback_label.config(wraplength=self.wrap_width)
-        self.root.update_idletasks()
+        target_width = max(self.wrap_width + (OVERLAY_SIDE_PADDING * 2), OVERLAY_MIN_WIDTH)
+        self.root.geometry(f"{target_width}x{self.root.winfo_height()}+{self.root.winfo_x()}+{self.root.winfo_y()}")
+        self._sync_overlay_layout()
         self.sync_background_size()
 
     def set_opacity_from_slider(self, val):

@@ -22,8 +22,47 @@ class DummyVar:
 
 
 class DummyRoot:
+    def __init__(self):
+        self._width = 760
+        self._height = 200
+        self._x = 0
+        self._y = 0
+
     def update_idletasks(self):
         return None
+
+    def winfo_width(self):
+        return self._width
+
+    def winfo_height(self):
+        return self._height
+
+    def winfo_x(self):
+        return self._x
+
+    def winfo_y(self):
+        return self._y
+
+    def geometry(self, spec):
+        size, _, position = spec.partition("+")
+        width, _, height = size.partition("x")
+        if width:
+            self._width = int(width)
+        if height:
+            self._height = int(height)
+        if position:
+            parts = spec.split("+")
+            if len(parts) >= 3:
+                self._x = int(parts[1])
+                self._y = int(parts[2])
+
+
+class DummyFrame:
+    def __init__(self, requested_height=180):
+        self.requested_height = requested_height
+
+    def winfo_reqheight(self):
+        return self.requested_height
 
 
 class GUIContractsTests(unittest.TestCase):
@@ -35,6 +74,20 @@ class GUIContractsTests(unittest.TestCase):
         gui.provisional_text_var = DummyVar()
         gui.runtime_status_var = DummyVar()
         gui.playback_status_var = DummyVar()
+        gui.current_model = "large-v3"
+        gui.current_device = "cpu"
+        gui.runtime_status = {
+            "runtime_state": "processing",
+            "message": "Transcribing utterance",
+            "detected_language": "es",
+            "source_language": "es",
+            "target_language": "en",
+            "task": "translate",
+            "model_size": "large-v3",
+            "device": "cpu",
+            "noise_floor": 0.0123,
+            "ambient_calibrated": True,
+        }
         gui.playback_state = PlaybackState(
             status=PlaybackStatus.IDLE,
             active_job_id=None,
@@ -42,7 +95,13 @@ class GUIContractsTests(unittest.TestCase):
             source=None,
         )
         gui.root = DummyRoot()
+        gui.content_frame = DummyFrame()
         gui.sync_background_size = lambda: None
+        gui.label = types.SimpleNamespace(config=lambda **kwargs: None)
+        gui.provisional_label = types.SimpleNamespace(config=lambda **kwargs: None)
+        gui.status_label = types.SimpleNamespace(config=lambda **kwargs: None)
+        gui.playback_label = types.SimpleNamespace(config=lambda **kwargs: None)
+        gui.wrap_width = 720
         return gui
 
     def test_update_translation_separates_committed_and_provisional_text(self):
@@ -80,6 +139,34 @@ class GUIContractsTests(unittest.TestCase):
         self.assertIn("Playing", rendered)
         self.assertIn("Committed Translation", rendered)
         self.assertIn("Queued: 2", rendered)
+
+    def test_format_provisional_suffix_trims_long_preview(self):
+        gui = self.make_gui()
+
+        formatted = gui._format_provisional_suffix("word " * 80)
+
+        self.assertTrue(formatted.startswith("..."))
+        self.assertLessEqual(len(formatted), 163)
+
+    def test_format_runtime_status_wraps_to_multiple_lines(self):
+        gui = self.make_gui()
+
+        rendered = gui._format_runtime_status()
+
+        self.assertNotIn("\n", rendered)
+        self.assertIn("Spanish -> English", rendered)
+
+    def test_format_committed_display_prefers_recent_caption_segments(self):
+        gui = self.make_gui()
+        committed = "One. Two. Three. Four. Five. Six."
+
+        rendered = gui._format_committed_display(committed)
+
+        self.assertNotIn("One.", rendered)
+        self.assertNotIn("Three.", rendered)
+        self.assertIn("Five.", rendered)
+        self.assertIn("Six.", rendered)
+        self.assertEqual(rendered.count("\n"), 1)
 
 
 if __name__ == "__main__":
