@@ -3,7 +3,13 @@ import numpy as np
 import scipy.signal
 import threading
 import time
-from config import TARGET_RATE, CHUNK_SIZE
+import queue
+from config import (
+    TARGET_RATE,
+    CHUNK_SIZE,
+    INPUT_RESAMPLE_BLOCK_SECONDS,
+    RESAMPLE_CONTEXT_SECONDS,
+)
 
 
 def find_loopback_device(p):
@@ -38,6 +44,9 @@ class AudioRecorder:
         self.thread = None
         self.device_channels = 1
         self.device_rate = 44100
+        self.raw_audio_queue = queue.SimpleQueue()
+        self.pending_audio = np.array([], dtype=np.float32)
+        self.resample_context = np.array([], dtype=np.float32)
 
     def get_loopback_device(self, p):
         try:
@@ -47,20 +56,52 @@ class AudioRecorder:
             return None
 
     def callback(self, in_data, frame_count, time_info, status):
-        # Convert bytes to float32
         audio_data = np.frombuffer(in_data, dtype=np.int16).astype(np.float32) / 32768.0
-        
-        # Mix Stereo -> Mono
+
         if self.device_channels > 1:
             audio_data = audio_data.reshape(-1, self.device_channels).mean(axis=1)
-            
-        # Resample to 16k
-        if self.device_rate != TARGET_RATE:
-            num_samples = int(len(audio_data) * TARGET_RATE / self.device_rate)
-            audio_data = scipy.signal.resample(audio_data, num_samples)
-            
-        self.audio_queue.put(audio_data)
+
+        self.raw_audio_queue.put(audio_data)
         return (in_data, pyaudio.paContinue)
+
+    def _drain_raw_audio(self):
+        chunks = []
+        while True:
+            try:
+                chunks.append(self.raw_audio_queue.get_nowait())
+            except queue.Empty:
+                break
+        if chunks:
+            self.pending_audio = np.concatenate([self.pending_audio, *chunks])
+
+    def _resample_block(self, audio_block):
+        if len(audio_block) == 0:
+            return np.array([], dtype=np.float32)
+
+        if self.device_rate == TARGET_RATE:
+            return audio_block.astype(np.float32, copy=False)
+
+        context = self.resample_context
+        combined = np.concatenate((context, audio_block)) if len(context) else audio_block
+        resampled = scipy.signal.resample_poly(combined, TARGET_RATE, self.device_rate).astype(np.float32)
+
+        context_output_samples = int(round(len(context) * TARGET_RATE / self.device_rate))
+        trimmed = resampled[context_output_samples:]
+
+        context_samples = max(int(self.device_rate * RESAMPLE_CONTEXT_SECONDS), 1)
+        self.resample_context = combined[-context_samples:].copy()
+        return trimmed
+
+    def _emit_resampled_audio(self, flush=False):
+        block_samples = max(int(self.device_rate * INPUT_RESAMPLE_BLOCK_SECONDS), CHUNK_SIZE)
+
+        while len(self.pending_audio) >= block_samples or (flush and len(self.pending_audio) > 0):
+            take = len(self.pending_audio) if flush and len(self.pending_audio) < block_samples else block_samples
+            block = self.pending_audio[:take]
+            self.pending_audio = self.pending_audio[take:]
+            resampled = self._resample_block(block)
+            if len(resampled):
+                self.audio_queue.put(resampled)
 
     def _record_loop(self):
         p = pyaudio.PyAudio()
@@ -86,12 +127,16 @@ class AudioRecorder:
             
             stream.start_stream()
             while self.running:
+                self._drain_raw_audio()
+                self._emit_resampled_audio()
                 time.sleep(0.1)
             stream.stop_stream()
             stream.close()
         except Exception as e:
             print(f"[Audio] Recording Error: {e}")
         finally:
+            self._drain_raw_audio()
+            self._emit_resampled_audio(flush=True)
             p.terminate()
 
     def start(self):

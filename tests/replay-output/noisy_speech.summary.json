@@ -1,0 +1,71 @@
+{
+  "input": "C:\\Users\\Calvin\\Software Projects\\OmniBabel\\tests\\fixtures\\noisy_speech.wav",
+  "sample_rate": 16000,
+  "duration_seconds": 4.359,
+  "block_seconds": 0.25,
+  "realtime": false,
+  "flush_completed": true,
+  "elapsed_seconds": 0.641,
+  "emission_count": 1,
+  "emitted_text": [
+    "This clip mixes speech with background noise for threshold testing."
+  ],
+  "detected_languages": [
+    "en"
+  ],
+  "status_sequence": [
+    "loading_model",
+    "listening",
+    "listening",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "speech_detected",
+    "processing",
+    "processing",
+    "listening"
+  ],
+  "runtime_config": {
+    "source_language": "auto",
+    "target_language": "source",
+    "task": "transcribe",
+    "vad_energy_threshold": 0.012,
+    "utterance_end_silence_seconds": 0.45,
+    "min_utterance_seconds": 0.8,
+    "max_utterance_seconds": 8.0,
+    "debug_logging_enabled": false,
+    "noise_floor": 0.0,
+    "ambient_calibrated": false
+  },
+  "final_status": {
+    "runtime_state": "listening",
+    "message": "Listening for speech",
+    "detected_language": "en",
+    "source_language": "auto",
+    "target_language": "source",
+    "task": "transcribe",
+    "model_size": "tiny",
+    "device": "cpu",
+    "debug_logging_enabled": false,
+    "vad_energy_threshold": 0.012,
+    "utterance_end_silence_seconds": 0.45,
+    "min_utterance_seconds": 0.8,
+    "max_utterance_seconds": 8.0,
+    "noise_floor": 0.0,
+    "ambient_calibrated": false
+  }
+}

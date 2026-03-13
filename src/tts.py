@@ -1,100 +1,335 @@
-import pyttsx3
-import threading
+import importlib
+import importlib.util
+import os
 import queue
+import re
+import tempfile
+import threading
+
 import pythoncom
+import pyttsx3
 import sounddevice as sd
 import soundfile as sf
-import os
-import tempfile
 
-class TTSHandle:
-    def __init__(self):
-        self.queue = queue.Queue()
-        self.running = True
-        self.enabled = False
-        self.output_device_index = None 
-        self.voice_id = None # <--- Store selected voice ID
-        
-        self.thread = threading.Thread(target=self._worker, daemon=True)
-        self.thread.start()
+from src.streaming_contracts import (
+    InterruptPolicy,
+    PlaybackState,
+    PlaybackStatus,
+    TranslationUpdate,
+    TTSJob,
+    TTSJobSource,
+)
+
+CLAUSE_ENDING_CHARS = ".?!;:"
+
+
+class TTSBackend:
+    name = "base"
 
     def get_voices(self):
-        """Returns a list of available voices"""
+        return []
+
+    def synthesize(self, text, voice_id=None):
+        raise NotImplementedError
+
+
+class Pyttsx3Backend(TTSBackend):
+    name = "system"
+
+    def get_voices(self):
         try:
-            # We need a temporary engine just to read the list
             temp_engine = pyttsx3.init()
-            voices = temp_engine.getProperty('voices')
-            voice_list = []
-            for v in voices:
-                # Save just the ID and the Name
-                voice_list.append({"id": v.id, "name": v.name})
+            voices = temp_engine.getProperty("voices")
+            voice_list = [{"id": voice.id, "name": voice.name} for voice in voices]
             del temp_engine
             return voice_list
-        except:
+        except Exception:
             return []
 
+    def synthesize(self, text, voice_id=None):
+        temp_file = None
+        try:
+            fd, temp_file = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            engine = pyttsx3.init()
+            if voice_id:
+                try:
+                    engine.setProperty("voice", voice_id)
+                except Exception:
+                    pass
+            engine.save_to_file(text, temp_file)
+            engine.runAndWait()
+            del engine
+            data, sample_rate = sf.read(temp_file)
+            return data, sample_rate
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+
+
+class KokoroBackend(TTSBackend):
+    name = "kokoro"
+
+    def __init__(self):
+        spec = importlib.util.find_spec("kokoro")
+        if spec is None:
+            raise RuntimeError("Kokoro backend requested but the 'kokoro' package is not installed")
+        self.kokoro = importlib.import_module("kokoro")
+
+    def synthesize(self, text, voice_id=None):
+        raise NotImplementedError("Kokoro backend wiring is not yet available in this environment")
+
+
+class TTSHandle:
+    def __init__(self, state_callback=None):
+        self.synthesis_queue = queue.Queue()
+        self.playback_queue = queue.Queue()
+        self.running = True
+        self.enabled = False
+        self.output_device_index = None
+        self.voice_id = None
+        self.backend_name = "system"
+        self.backend = Pyttsx3Backend()
+        self.state_callback = state_callback or (lambda state: None)
+        self.state_lock = threading.Lock()
+        self.last_commit_id = 0
+        self.last_committed_text = ""
+        self.pending_clause_text = ""
+        self.next_job_id = 1
+        self.next_clause_id = 1
+
+        self.synthesis_thread = threading.Thread(target=self._synthesis_worker, daemon=True)
+        self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
+        self.synthesis_thread.start()
+        self.playback_thread.start()
+        self._emit_state(PlaybackStatus.IDLE, active_job_id=None, source=None)
+
+    def get_voices(self):
+        return self.backend.get_voices()
+
+    def get_available_backends(self):
+        backends = ["system"]
+        if importlib.util.find_spec("kokoro") is not None:
+            backends.append("kokoro")
+        return backends
+
+    def set_backend(self, backend_name):
+        if backend_name == self.backend_name:
+            return
+        self.backend = self._build_backend(backend_name)
+        self.backend_name = backend_name
+
+    def _build_backend(self, backend_name):
+        if backend_name == "system":
+            return Pyttsx3Backend()
+        if backend_name == "kokoro":
+            return KokoroBackend()
+        raise ValueError(f"Unknown TTS backend: {backend_name}")
+
     def set_voice(self, voice_id):
-        """Sets the voice (Male/Female)"""
         print(f"[TTS] Setting Voice ID: {voice_id}")
         self.voice_id = voice_id
 
     def set_output_device(self, device_index):
         self.output_device_index = device_index
 
-    def _worker(self):
+    def submit_job(self, job):
+        if not self.enabled or job is None:
+            return
+        if job.interrupt_policy == InterruptPolicy.FLUSH_AND_INTERRUPT:
+            self.flush_queues(cancel_current=True)
+        elif job.interrupt_policy == InterruptPolicy.INTERRUPT:
+            self.cancel_current()
+        self.synthesis_queue.put(job)
+        self._emit_state(PlaybackStatus.QUEUED, active_job_id=job.job_id, source=job.source)
+
+    def submit_translation_update(self, update):
+        if not self.enabled or update is None:
+            return
+        is_final_flush = bool(update.clause and update.clause.is_final_clause and self.pending_clause_text.strip())
+        if update.commit_id < self.last_commit_id:
+            return
+        if update.commit_id > self.last_commit_id:
+            if not update.committed_text.startswith(self.last_committed_text):
+                raise ValueError("Committed transcript must be append-only")
+            if update.committed_append and not update.committed_text.endswith(update.committed_append):
+                raise ValueError("Committed append must remain a suffix of committed text")
+            self.last_commit_id = update.commit_id
+            self.last_committed_text = update.committed_text
+            self.pending_clause_text += update.committed_append
+        elif not is_final_flush:
+            return
+
+        clauses, remainder = self._extract_complete_clauses(
+            self.pending_clause_text,
+            flush=bool(update.clause and update.clause.is_final_clause),
+        )
+        self.pending_clause_text = remainder
+
+        for index, clause_text in enumerate(clauses):
+            is_last_clause = index == len(clauses) - 1
+            job_source = (
+                TTSJobSource.FINAL_CLAUSE
+                if update.clause and update.clause.is_final_clause and is_last_clause
+                else TTSJobSource.COMMITTED_TRANSLATION
+            )
+            job = TTSJob(
+                job_id=self.next_job_id,
+                commit_id=update.commit_id,
+                clause_id=self.next_clause_id,
+                text=clause_text,
+                source=job_source,
+                interrupt_policy=InterruptPolicy.QUEUE,
+            )
+            self.next_job_id += 1
+            self.next_clause_id += 1
+            self.submit_job(job)
+
+    def speak(self, text):
+        if not self.enabled or not text or not text.strip():
+            return
+        fallback_job = TTSJob(
+            job_id=0,
+            commit_id=0,
+            clause_id=0,
+            text=text,
+            source=TTSJobSource.MANUAL_TEST,
+            interrupt_policy=InterruptPolicy.QUEUE,
+        )
+        self.submit_job(fallback_job)
+
+    def _extract_complete_clauses(self, text, flush=False):
+        clauses = []
+        start = 0
+        length = len(text)
+
+        for index, char in enumerate(text):
+            if char not in CLAUSE_ENDING_CHARS:
+                continue
+            next_index = index + 1
+            if next_index < length and not text[next_index].isspace():
+                continue
+            clause = text[start:next_index].strip()
+            if clause:
+                clauses.append(clause)
+            start = next_index
+
+        remainder = text[start:]
+        if flush:
+            tail = remainder.strip()
+            if tail:
+                clauses.append(tail)
+            remainder = ""
+        return clauses, remainder
+
+    def _emit_state(self, status, active_job_id, source):
+        with self.state_lock:
+            state = PlaybackState(
+                status=status,
+                active_job_id=active_job_id,
+                queued_jobs=self.synthesis_queue.qsize() + self.playback_queue.qsize(),
+                source=source,
+            )
+        self.state_callback(state)
+
+    def _clear_queue(self, target_queue):
+        while True:
+            try:
+                item = target_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is None:
+                target_queue.put(None)
+                break
+
+    def flush_queues(self, cancel_current=False):
+        self._clear_queue(self.synthesis_queue)
+        self._clear_queue(self.playback_queue)
+        self.pending_clause_text = ""
+        if cancel_current:
+            try:
+                sd.stop()
+            except Exception:
+                pass
+            self._emit_state(PlaybackStatus.CANCELLED, active_job_id=None, source=None)
+        self._emit_state(PlaybackStatus.IDLE, active_job_id=None, source=None)
+
+    def cancel_current(self):
+        try:
+            sd.stop()
+        except Exception:
+            pass
+        self._emit_state(PlaybackStatus.CANCELLED, active_job_id=None, source=None)
+
+    def _synthesis_worker(self):
         try:
             pythoncom.CoInitialize()
-        except: pass
+        except Exception:
+            pass
 
         while self.running:
             try:
-                text = self.queue.get(timeout=1)
-                
-                if self.enabled and text:
-                    temp_file = tempfile.mktemp(suffix=".wav")
-                    
-                    engine = pyttsx3.init()
-                    
-                    # 1. APPLY VOICE
-                    if self.voice_id:
-                        try:
-                            engine.setProperty('voice', self.voice_id)
-                        except: pass
-                    
-                    # 2. Optional: Make it slightly faster (150 is standard, 175 is upbeat)
-                    # engine.setProperty('rate', 170) 
-
-                    engine.save_to_file(text, temp_file)
-                    engine.runAndWait()
-                    del engine
-
-                    try:
-                        data, fs = sf.read(temp_file)
-                        sd.play(data, fs, device=self.output_device_index, blocking=True)
-                    except Exception as e:
-                        print(f"[TTS] Playback Error: {e}")
-                    
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-            
+                job = self.synthesis_queue.get(timeout=1)
             except queue.Empty:
                 continue
-            except Exception as e:
-                print(f"[TTS] Error: {e}")
+
+            if job is None:
+                break
+
+            if not self.enabled:
+                continue
+
+            temp_file = None
+            try:
+                self._emit_state(PlaybackStatus.SYNTHESIZING, active_job_id=job.job_id, source=job.source)
+                data, sample_rate = self.backend.synthesize(job.text, voice_id=self.voice_id)
+                self.playback_queue.put((job, data, sample_rate))
+                self._emit_state(PlaybackStatus.QUEUED, active_job_id=job.job_id, source=job.source)
+            except Exception as exc:
+                print(f"[TTS] Synthesis Error: {exc}")
+                self._emit_state(PlaybackStatus.ERROR, active_job_id=job.job_id, source=job.source)
 
         try:
             pythoncom.CoUninitialize()
-        except: pass
+        except Exception:
+            pass
 
-    def speak(self, text):
-        if self.enabled:
-            self.queue.put(text)
-            
+    def _playback_worker(self):
+        while self.running:
+            try:
+                item = self.playback_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+
+            if item is None:
+                break
+
+            job, data, sample_rate = item
+            if not self.enabled:
+                continue
+
+            try:
+                self._emit_state(PlaybackStatus.PLAYING, active_job_id=job.job_id, source=job.source)
+                sd.play(data, sample_rate, device=self.output_device_index, blocking=True)
+                next_status = PlaybackStatus.IDLE if self.synthesis_queue.empty() and self.playback_queue.empty() else PlaybackStatus.QUEUED
+                next_active = None if next_status == PlaybackStatus.IDLE else job.job_id
+                next_source = None if next_status == PlaybackStatus.IDLE else job.source
+                self._emit_state(PlaybackStatus.COMPLETED, active_job_id=job.job_id, source=job.source)
+                self._emit_state(next_status, active_job_id=next_active, source=next_source)
+            except Exception as exc:
+                print(f"[TTS] Playback Error: {exc}")
+                self._emit_state(PlaybackStatus.ERROR, active_job_id=job.job_id, source=job.source)
+
     def stop(self):
         self.running = False
         try:
             sd.stop()
         except Exception:
             pass
-        if self.thread:
-            self.thread.join(timeout=5)
+        self.synthesis_queue.put(None)
+        self.playback_queue.put(None)
+        if self.synthesis_thread:
+            self.synthesis_thread.join(timeout=5)
+        if self.playback_thread:
+            self.playback_thread.join(timeout=5)
+        self._emit_state(PlaybackStatus.IDLE, active_job_id=None, source=None)

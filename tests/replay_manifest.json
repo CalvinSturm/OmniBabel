@@ -1,0 +1,199 @@
+{
+  "cases": [
+    {
+      "name": "quiet_speech",
+      "input": "tests/fixtures/quiet_speech.wav",
+      "model": "tiny",
+      "device": "cpu",
+      "task": "transcribe",
+      "block_seconds": 0.25,
+      "expect": {
+        "flush_completed": true,
+        "emission_count": 1,
+        "contains_any_text": [
+          "lazy dog",
+          "over the lazy dog"
+        ],
+        "detected_languages_exact": [
+          "en"
+        ],
+        "require_status": [
+          "processing",
+          "listening"
+        ],
+        "runtime_config_fields": {
+          "task": "transcribe",
+          "ambient_calibrated": true
+        },
+        "forbid_text": [
+          "thank you for watching"
+        ]
+      }
+    },
+    {
+      "name": "rapid_pauses",
+      "input": "tests/fixtures/rapid_pauses.wav",
+      "model": "tiny",
+      "device": "cpu",
+      "task": "transcribe",
+      "block_seconds": 0.25,
+      "expect": {
+        "flush_completed": true,
+        "emission_count": 2,
+        "contains_any_text": [
+          "timing checks",
+          "timing check"
+        ],
+        "detected_languages_exact": [
+          "en",
+          "en"
+        ],
+        "require_status": [
+          "speech_detected",
+          "processing",
+          "listening"
+        ],
+        "forbid_text": [
+          "thank you for watching"
+        ]
+      }
+    },
+    {
+      "name": "noisy_speech",
+      "input": "tests/fixtures/noisy_speech.wav",
+      "model": "tiny",
+      "device": "cpu",
+      "task": "transcribe",
+      "block_seconds": 0.25,
+      "expect": {
+        "flush_completed": true,
+        "emission_count": 1,
+        "contains_all_text": [
+          "background noise",
+          "threshold"
+        ],
+        "detected_languages_exact": [
+          "en"
+        ],
+        "require_status": [
+          "speech_detected",
+          "processing",
+          "listening"
+        ],
+        "runtime_config_fields": {
+          "ambient_calibrated": false
+        },
+        "forbid_text": [
+          "thank you for watching"
+        ]
+      }
+    },
+    {
+      "name": "speech_at_eof",
+      "input": "tests/fixtures/speech_at_eof.wav",
+      "model": "tiny",
+      "device": "cpu",
+      "task": "transcribe",
+      "block_seconds": 0.25,
+      "expect": {
+        "flush_completed": true,
+        "emission_count": 1,
+        "contains_all_text": [
+          "ends on speech"
+        ],
+        "detected_languages_exact": [
+          "en"
+        ],
+        "require_status": [
+          "processing",
+          "listening"
+        ],
+        "forbid_text": [
+          "thank you for watching"
+        ]
+      }
+    },
+    {
+      "name": "music_under_speech",
+      "input": "tests/fixtures/music_under_speech.wav",
+      "model": "tiny",
+      "device": "cpu",
+      "task": "transcribe",
+      "block_seconds": 0.25,
+      "expect": {
+        "flush_completed": true,
+        "emission_count": 1,
+        "contains_all_text": [
+          "background music",
+          "spoken sentence"
+        ],
+        "detected_languages_exact": [
+          "en"
+        ],
+        "require_status": [
+          "speech_detected",
+          "processing",
+          "listening"
+        ],
+        "runtime_config_fields": {
+          "ambient_calibrated": false
+        },
+        "forbid_text": [
+          "thank you for watching"
+        ]
+      }
+    },
+    {
+      "name": "low_gain_speech",
+      "input": "tests/fixtures/low_gain_speech.wav",
+      "model": "tiny",
+      "device": "cpu",
+      "task": "transcribe",
+      "block_seconds": 0.25,
+      "expect": {
+        "flush_completed": true,
+        "emission_count": 0,
+        "require_status": [
+          "speech_detected",
+          "processing",
+          "listening"
+        ],
+        "runtime_config_fields": {
+          "ambient_calibrated": true
+        },
+        "final_status_fields": {
+          "message": "No new speech emitted"
+        }
+      }
+    },
+    {
+      "name": "calibration_lead_in",
+      "input": "tests/fixtures/calibration_lead_in.wav",
+      "model": "tiny",
+      "device": "cpu",
+      "task": "transcribe",
+      "block_seconds": 0.25,
+      "expect": {
+        "flush_completed": true,
+        "emission_count": 1,
+        "contains_all_text": [
+          "quiet lead in",
+          "detected cleanly"
+        ],
+        "detected_languages_exact": [
+          "en"
+        ],
+        "require_status": [
+          "processing",
+          "listening"
+        ],
+        "runtime_config_fields": {
+          "ambient_calibrated": true
+        },
+        "forbid_text": [
+          "thank you for watching"
+        ]
+      }
+    }
+  ]
+}

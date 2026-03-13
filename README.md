@@ -81,7 +81,7 @@ OmniBabel is designed for users who care about data sovereignty. Unlike browser 
 Right-click the overlay to access the settings menu:
 
 ### AI Model Settings
-*   **Model Size:** Choose between `small` (fastest), `medium`, `large-v3` (most accurate), or `distil-large-v3` (balanced).
+*   **Model Size:** `large-v3` is now the default for best translation accuracy. Use `distil-large-v3` or `small` only if you need lower latency.
 *   **Device:** Select `cpu` or `cuda` (if you have an NVIDIA GPU).
 
 ### Appearance
@@ -127,7 +127,24 @@ live-video-translator/
 
 *   **"Model not loading":** The first time you select a new model (e.g., `large-v3`), it downloads ~3GB of data. The app may freeze momentarily. Check your console/terminal for download progress.
 *   **"Hallucinations" (Thank you for watching):** The app includes a filter for common Whisper hallucinations. If one sneaks through, the code in `src/transcriber.py` can be updated to add new banned phrases.
-*   **Audio Lag:** Set the model to `small` or `distil-large-v3`. If using CPU, stick to `small` or `base`.
+*   **Audio Lag:** The default settings now favor accuracy over speed. If latency is too high, switch to `distil-large-v3` or `small`.
+
+## 🧪 Replay Regression Workflow
+
+Use `replay_audio.py` to run saved audio through the live transcriber path and export a structured summary:
+
+```bash
+python replay_audio.py .\sample.wav --print-summary
+python replay_audio.py .\sample.wav --summary-json .\summary.json --quiet
+```
+
+To build a small audio regression corpus, add fixture clips under `tests/fixtures/`, update `tests/replay_manifest.json`, and run:
+
+```bash
+python tests/run_replay_suite.py --manifest tests/replay_manifest.json --keep-summaries
+```
+
+This is the intended verification path for tuning VAD thresholds, end-of-file flush behavior, and emission filtering decisions against real clips.
 
 ## 📜 License
 

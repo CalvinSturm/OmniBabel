@@ -1,7 +1,20 @@
 import json
 from pathlib import Path
 
-from config import DEFAULT_DEVICE, DEFAULT_FONT_SIZE, DEFAULT_MODEL_SIZE, DEFAULT_OPACITY
+from config import (
+    DEFAULT_DEBUG_LOGGING,
+    DEFAULT_DEVICE,
+    DEFAULT_FONT_SIZE,
+    DEFAULT_MAX_UTTERANCE_SECONDS,
+    DEFAULT_MIN_UTTERANCE_SECONDS,
+    DEFAULT_MODEL_SIZE,
+    DEFAULT_OPACITY,
+    DEFAULT_SOURCE_LANGUAGE,
+    DEFAULT_TARGET_LANGUAGE,
+    DEFAULT_TASK,
+    DEFAULT_UTTERANCE_END_SILENCE_SECONDS,
+    DEFAULT_VAD_ENERGY_THRESHOLD,
+)
 
 
 SETTINGS_PATH = Path(__file__).resolve().parent.parent / "settings.json"
@@ -11,6 +24,14 @@ DEFAULT_SETTINGS = {
     "device": DEFAULT_DEVICE,
     "font_size": DEFAULT_FONT_SIZE,
     "opacity": DEFAULT_OPACITY,
+    "source_language": DEFAULT_SOURCE_LANGUAGE,
+    "target_language": DEFAULT_TARGET_LANGUAGE,
+    "task": DEFAULT_TASK,
+    "vad_energy_threshold": DEFAULT_VAD_ENERGY_THRESHOLD,
+    "utterance_end_silence_seconds": DEFAULT_UTTERANCE_END_SILENCE_SECONDS,
+    "min_utterance_seconds": DEFAULT_MIN_UTTERANCE_SECONDS,
+    "max_utterance_seconds": DEFAULT_MAX_UTTERANCE_SECONDS,
+    "debug_logging_enabled": DEFAULT_DEBUG_LOGGING,
     "tts_enabled": False,
     "voice_id": None,
     "output_device_index": None,
