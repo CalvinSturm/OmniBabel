@@ -198,13 +198,14 @@ def main():
     if normalization_warnings:
         save_settings(settings)
     audio_queue = queue.Queue()
+    gui = None
+
     def on_tts_playback_state(state):
         if gui is not None:
             gui.schedule_playback_state_update(state)
 
     tts_engine = TTSHandle(state_callback=on_tts_playback_state)
     shutting_down = False
-    gui = None
     pending_status = None
 
     def persist_settings(changes):
