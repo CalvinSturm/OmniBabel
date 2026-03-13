@@ -101,6 +101,11 @@ class ReplayToolingTests(unittest.TestCase):
 
         self.assertEqual(summary["emission_count"], 1)
         self.assertEqual(summary["emitted_text"], ["hello world"])
+        self.assertEqual(summary["final_committed_text"], "hello world")
+        self.assertTrue(summary["append_only_valid"])
+        self.assertEqual(summary["revision_ids"], [1])
+        self.assertEqual(summary["commit_ids"], [1])
+        self.assertEqual(summary["clause_ids"], [1])
         self.assertTrue(summary["flush_completed"])
         self.assertIn("processing", summary["status_sequence"])
         self.assertEqual(summary["runtime_config"]["task"], "translate")
@@ -118,15 +123,18 @@ class ReplayToolingTests(unittest.TestCase):
                 "min_emission_count": 2,
                 "contains_any_text": ["missing phrase"],
                 "require_status": ["error"],
+                "append_only_valid": True,
+                "monotonic_revision_ids": True,
             }
         }
 
         errors = evaluate_case(case, summary)
 
-        self.assertEqual(len(errors), 3)
+        self.assertEqual(len(errors), 4)
         self.assertTrue(any("emission_count>=" in error for error in errors))
         self.assertTrue(any("missing phrase" in error for error in errors))
         self.assertTrue(any("status_sequence" in error for error in errors))
+        self.assertTrue(any("append_only_valid" in error for error in errors))
 
 
 if __name__ == "__main__":

@@ -34,7 +34,9 @@ class TranscriberPhase1Tests(unittest.TestCase):
         transcriber.committed_text = ""
         transcriber.current_utterance_committed_prefix = ""
         transcriber.last_preview_hypothesis = ""
+        transcriber.preview_hypothesis_history = []
         transcriber.last_preview_decode_sample = 0
+        transcriber.last_preview_commit_sample = 0
         transcriber.current_utterance_started_committing = False
         transcriber.noise_floor = 0.0
         transcriber.ambient_frame_history = []
@@ -166,6 +168,123 @@ class TranscriberPhase1Tests(unittest.TestCase):
         prefix = transcriber._common_word_prefix("hello there general", "hello there world")
 
         self.assertEqual(prefix, "hello there")
+
+    def test_rolling_common_word_prefix_uses_recent_preview_history(self):
+        transcriber = self.make_transcriber()
+
+        prefix = transcriber._rolling_common_word_prefix(
+            [
+                "hello there general kenobi",
+                "hello there world again",
+                "hello there friend",
+            ]
+        )
+
+        self.assertEqual(prefix, "hello there")
+
+    def test_determine_stable_prefix_requires_multiple_preview_confirmations(self):
+        transcriber = self.make_transcriber()
+
+        first = transcriber._determine_stable_prefix("alpha beta gamma", is_final=False)
+        second = transcriber._determine_stable_prefix("alpha beta delta", is_final=False)
+        third = transcriber._determine_stable_prefix("alpha beta epsilon", is_final=False)
+
+        self.assertEqual(first, "")
+        self.assertEqual(second, "")
+        self.assertEqual(third, "alpha beta")
+
+    def test_determine_stable_prefix_holds_new_word_until_confirmation_depth_met(self):
+        transcriber = self.make_transcriber()
+
+        transcriber._determine_stable_prefix("alpha beta gamma", is_final=False)
+        transcriber._determine_stable_prefix("alpha beta gamma delta", is_final=False)
+        stable = transcriber._determine_stable_prefix("alpha beta gamma epsilon", is_final=False)
+
+        self.assertEqual(stable, "alpha beta gamma")
+
+    def test_determine_stable_prefix_ignores_recent_regression_beyond_confirmed_prefix(self):
+        transcriber = self.make_transcriber()
+
+        transcriber._determine_stable_prefix("alpha beta gamma delta", is_final=False)
+        transcriber._determine_stable_prefix("alpha beta gamma epsilon", is_final=False)
+        transcriber._determine_stable_prefix("alpha beta gamma zeta", is_final=False)
+        stable = transcriber._determine_stable_prefix("alpha beta theta", is_final=False)
+
+        self.assertEqual(stable, "alpha beta")
+
+    def test_determine_stable_prefix_final_decode_commits_full_hypothesis(self):
+        transcriber = self.make_transcriber()
+        transcriber.preview_hypothesis_history = ["alpha beta gamma", "alpha beta delta"]
+
+        stable = transcriber._determine_stable_prefix("alpha beta final clause", is_final=True)
+
+        self.assertEqual(stable, "alpha beta final clause")
+        self.assertEqual(transcriber.preview_hypothesis_history, ["alpha beta gamma", "alpha beta delta"])
+
+    def test_preview_commit_gate_allows_first_preview_commit(self):
+        transcriber = self.make_transcriber()
+        stable = transcriber._apply_preview_commit_gate("alpha beta", chunk_end_sample=int(TARGET_RATE * 1.0), is_final=False)
+
+        self.assertEqual(stable, "alpha beta")
+
+    def test_preview_commit_gate_holds_preview_commit_until_commit_hop_elapsed(self):
+        transcriber = self.make_transcriber()
+        transcriber.current_utterance_committed_prefix = "alpha"
+        transcriber.last_preview_commit_sample = int(TARGET_RATE * 1.0)
+
+        stable = transcriber._apply_preview_commit_gate("alpha beta", chunk_end_sample=int(TARGET_RATE * 1.8), is_final=False)
+
+        self.assertEqual(stable, "alpha")
+
+    def test_preview_commit_gate_allows_final_decode_without_hop_delay(self):
+        transcriber = self.make_transcriber()
+        transcriber.current_utterance_committed_prefix = "alpha"
+        transcriber.last_preview_commit_sample = int(TARGET_RATE * 1.0)
+
+        stable = transcriber._apply_preview_commit_gate("alpha beta", chunk_end_sample=int(TARGET_RATE * 1.1), is_final=True)
+
+        self.assertEqual(stable, "alpha beta")
+
+    def test_preview_boundary_preference_trims_to_last_clause_boundary(self):
+        transcriber = self.make_transcriber()
+
+        stable = transcriber._apply_preview_boundary_preference(
+            "alpha beta. gamma delta",
+            is_final=False,
+        )
+
+        self.assertEqual(stable, "alpha beta.")
+
+    def test_preview_boundary_preference_keeps_full_prefix_without_clause_boundary(self):
+        transcriber = self.make_transcriber()
+
+        stable = transcriber._apply_preview_boundary_preference(
+            "alpha beta gamma",
+            is_final=False,
+        )
+
+        self.assertEqual(stable, "alpha beta gamma")
+
+    def test_preview_boundary_preference_does_not_retract_existing_commit(self):
+        transcriber = self.make_transcriber()
+        transcriber.current_utterance_committed_prefix = "alpha beta."
+
+        stable = transcriber._apply_preview_boundary_preference(
+            "alpha beta. gamma delta",
+            is_final=False,
+        )
+
+        self.assertEqual(stable, "alpha beta.")
+
+    def test_preview_boundary_preference_keeps_final_decode_unchanged(self):
+        transcriber = self.make_transcriber()
+
+        stable = transcriber._apply_preview_boundary_preference(
+            "alpha beta. gamma delta",
+            is_final=True,
+        )
+
+        self.assertEqual(stable, "alpha beta. gamma delta")
 
     def test_hallucination_filter_blocks_broadcast_and_caption_junk(self):
         transcriber = self.make_transcriber()

@@ -105,6 +105,7 @@ def normalize_settings(settings):
     min_utterance_seconds = normalized.get("min_utterance_seconds", DEFAULT_MIN_UTTERANCE_SECONDS)
     max_utterance_seconds = normalized.get("max_utterance_seconds", DEFAULT_MAX_UTTERANCE_SECONDS)
     debug_logging_enabled = normalized.get("debug_logging_enabled", DEFAULT_DEBUG_LOGGING)
+    tts_backend = normalized.get("tts_backend", "system")
 
     if model_size not in AVAILABLE_MODELS:
         replacement_model = DEFAULT_MODEL_SIZE
@@ -172,6 +173,12 @@ def normalize_settings(settings):
 
     normalized["debug_logging_enabled"] = bool(debug_logging_enabled)
 
+    if tts_backend not in ("system", "kokoro"):
+        warnings.append("Saved TTS backend is invalid. Using 'system' instead.")
+        normalized["tts_backend"] = "system"
+    else:
+        normalized["tts_backend"] = tts_backend
+
     return normalized, warnings
 
 
@@ -205,6 +212,7 @@ def main():
         save_settings(settings)
 
     tts_engine.enabled = settings["tts_enabled"]
+    tts_engine.set_backend(settings["tts_backend"])
     if settings["output_device_index"] is not None:
         tts_engine.set_output_device(settings["output_device_index"])
     if settings["voice_id"]:
@@ -244,8 +252,29 @@ def main():
     def change_tts_voice(voice_id):
         tts_engine.set_voice(voice_id)
 
+    def change_tts_backend(backend_name):
+        tts_engine.set_backend(backend_name)
+        current_voices = tts_engine.get_voices()
+        selected_voice_id = settings.get("voice_id")
+        if selected_voice_id and any(voice["id"] == selected_voice_id for voice in current_voices):
+            tts_engine.set_voice(selected_voice_id)
+        elif current_voices:
+            selected_voice_id = current_voices[0]["id"]
+            tts_engine.set_voice(selected_voice_id)
+        else:
+            selected_voice_id = None
+            tts_engine.set_voice(None)
+        persist_settings({"tts_backend": backend_name, "voice_id": selected_voice_id})
+        return {
+            "tts_backend": backend_name,
+            "voice_id": selected_voice_id,
+        }
+
     def get_available_voices():
         return tts_engine.get_voices()
+
+    def get_available_tts_backends():
+        return tts_engine.get_available_backends()
 
     recorder = AudioRecorder(audio_queue)
     try:
@@ -337,7 +366,9 @@ def main():
         tts_toggle_callback=toggle_tts_enabled,
         tts_device_callback=change_tts_device,
         tts_voice_callback=change_tts_voice,
+        tts_backend_callback=change_tts_backend,
         get_voices_callback=get_available_voices,
+        get_tts_backends_callback=get_available_tts_backends,
         model_change_callback=change_ai_model,
         translation_settings_callback=change_translation_settings,
         initial_settings=settings,

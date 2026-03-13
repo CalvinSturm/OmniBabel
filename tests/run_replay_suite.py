@@ -78,8 +78,36 @@ def evaluate_case(case, summary):
             f"{expected['detected_languages_exact']}, got {summary.get('detected_languages')}"
         )
 
+    if "detected_language_all" in expected:
+        detected_languages = summary.get("detected_languages", [])
+        expected_language = expected["detected_language_all"]
+        if any(language != expected_language for language in detected_languages):
+            errors.append(
+                f"expected all detected_languages to be {expected_language}, got {detected_languages}"
+            )
+
     emitted_text = summary.get("emitted_text", [])
     joined_text = " ".join(emitted_text).lower()
+    final_committed_text = summary.get("final_committed_text", "")
+    final_text_lower = final_committed_text.lower()
+
+    if expected.get("append_only_valid") is True and not summary.get("append_only_valid", False):
+        errors.append("expected append_only_valid=True, got False")
+
+    if expected.get("monotonic_revision_ids") is True:
+        revision_ids = summary.get("revision_ids", [])
+        if revision_ids != sorted(revision_ids):
+            errors.append(f"expected monotonic revision_ids, got {revision_ids}")
+
+    if expected.get("monotonic_commit_ids") is True:
+        commit_ids = summary.get("commit_ids", [])
+        if commit_ids != sorted(commit_ids):
+            errors.append(f"expected monotonic commit_ids, got {commit_ids}")
+
+    if expected.get("monotonic_clause_ids") is True:
+        clause_ids = [clause_id for clause_id in summary.get("clause_ids", []) if clause_id is not None]
+        if clause_ids != sorted(clause_ids):
+            errors.append(f"expected monotonic clause_ids, got {clause_ids}")
 
     contains_all = expected.get("contains_all_text", [])
     for phrase in contains_all:
@@ -90,8 +118,17 @@ def evaluate_case(case, summary):
     if contains_any and not any(phrase.lower() in joined_text for phrase in contains_any):
         errors.append(f"expected emitted text to contain one of {contains_any}")
 
+    final_contains_all = expected.get("final_contains_all_text", [])
+    for phrase in final_contains_all:
+        if phrase.lower() not in final_text_lower:
+            errors.append(f"expected final committed text to contain '{phrase}'")
+
+    final_contains_any = expected.get("final_contains_any_text", [])
+    if final_contains_any and not any(phrase.lower() in final_text_lower for phrase in final_contains_any):
+        errors.append(f"expected final committed text to contain one of {final_contains_any}")
+
     for phrase in expected.get("forbid_text", []):
-        if phrase.lower() in joined_text:
+        if phrase.lower() in joined_text or phrase.lower() in final_text_lower:
             errors.append(f"expected emitted text not to contain '{phrase}'")
 
     for state in expected.get("require_status", []):

@@ -2,7 +2,9 @@ import sys
 import types
 import unittest
 import queue
+from unittest import mock
 
+import numpy as np
 
 if "pythoncom" not in sys.modules:
     sys.modules["pythoncom"] = types.SimpleNamespace(CoInitialize=lambda: None, CoUninitialize=lambda: None)
@@ -14,7 +16,7 @@ if "soundfile" not in sys.modules:
     sys.modules["soundfile"] = types.SimpleNamespace(read=lambda *args, **kwargs: ([], 16000))
 
 from src.streaming_contracts import ClauseInfo, InterruptPolicy, PlaybackStatus, TTSJob, TTSJobSource, TranslationUpdate
-from src.tts import Pyttsx3Backend, TTSHandle
+from src.tts import KOKORO_DEFAULT_SAMPLE_RATE, KOKORO_DEFAULT_VOICE, KokoroBackend, Pyttsx3Backend, TTSHandle
 
 
 class TTSSchedulerTests(unittest.TestCase):
@@ -177,6 +179,38 @@ class TTSSchedulerTests(unittest.TestCase):
         backend = TTSHandle._build_backend(handle, "system")
 
         self.assertIsInstance(backend, Pyttsx3Backend)
+
+    def test_build_kokoro_backend_returns_backend(self):
+        handle = self.make_handle()
+        fake_module = object()
+
+        with (
+            mock.patch("src.tts.importlib.util.find_spec", return_value=object()),
+            mock.patch("src.tts.importlib.import_module", return_value=fake_module),
+        ):
+            backend = TTSHandle._build_backend(handle, "kokoro")
+
+        self.assertIsInstance(backend, KokoroBackend)
+        self.assertIs(backend.kokoro, fake_module)
+
+    def test_kokoro_backend_synthesize_concatenates_pipeline_audio(self):
+        backend = object.__new__(KokoroBackend)
+        pipeline = mock.Mock()
+        pipeline.side_effect = lambda text, voice, split_pattern: iter(
+            [
+                types.SimpleNamespace(audio=np.array([0.1, 0.2], dtype=np.float32)),
+                types.SimpleNamespace(audio=np.array([0.3], dtype=np.float32)),
+            ]
+        )
+        backend.pipeline_cache = {"a": pipeline}
+        backend.kokoro = mock.Mock()
+        backend._get_pipeline = KokoroBackend._get_pipeline.__get__(backend, KokoroBackend)
+        backend._get_lang_code = KokoroBackend._get_lang_code.__get__(backend, KokoroBackend)
+
+        audio, sample_rate = KokoroBackend.synthesize(backend, "Hello world", voice_id=KOKORO_DEFAULT_VOICE)
+
+        self.assertEqual(sample_rate, KOKORO_DEFAULT_SAMPLE_RATE)
+        self.assertTrue(np.array_equal(audio, np.array([0.1, 0.2, 0.3], dtype=np.float32)))
 
     def test_unknown_backend_raises(self):
         handle = self.make_handle()

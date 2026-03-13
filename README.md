@@ -76,6 +76,78 @@ OmniBabel is designed for users who care about data sovereignty. Unlike browser 
     *   **Right Click:** Open **Settings Menu**.
     *   **Double Right Click:** Exit the application.
 
+## 🔁 Streaming Contract
+
+OmniBabel now uses a contract-based streaming pipeline:
+
+```text
+audio -> provisional decode -> append-only committed text -> clause chunking
+-> queued TTS synthesis/playback -> playback state updates
+```
+
+The runtime invariants are:
+
+* `revision_id` tracks mutable UI state.
+* `commit_id` tracks append-only committed state.
+* `clause_id` identifies immutable spoken units.
+* `provisional_text` may revise between updates.
+* `committed_text` may only append.
+* TTS only consumes `committed_append` and final committed clauses.
+
+### `TranslationUpdate`
+
+`src/transcriber.py` emits `TranslationUpdate` objects instead of raw text callbacks.
+
+* `provisional_text`: full UI-facing string including any revisable suffix.
+* `committed_text`: append-only transcript accumulated so far.
+* `committed_append`: the immutable suffix added at the current `commit_id`.
+* `clause`: optional final-clause metadata for immutable spoken spans.
+* `audio_start_ms` / `audio_end_ms`: source timing for the update window.
+
+### Current Streaming Agreement Behavior
+
+The current transcriber logic is no longer a single previous/current prefix check. It now uses:
+
+* a rolling preview confirmation window before new preview text can become committed,
+* separate preview decode cadence and preview commit cadence,
+* boundary-aware preview commits that prefer clause-ending punctuation before crossing into the next clause,
+* full final-hypothesis commit on utterance completion.
+
+In practice, this means the overlay can still show responsive provisional text, while committed text advances more conservatively and is shaped into more natural immutable chunks before TTS sees it.
+
+### Playback State
+
+`src/tts.py` emits `PlaybackState` updates for the overlay:
+
+* `idle`: no active synthesis or playback work.
+* `queued`: at least one job is waiting in synthesis or playback queues.
+* `synthesizing`: a queued clause is being rendered by the active backend.
+* `playing`: synthesized audio is currently playing.
+* `completed`: a job finished playback.
+* `cancelled`: playback was interrupted or flushed.
+* `error`: synthesis or playback failed.
+
+The overlay shows committed text, provisional suffix, runtime status, and playback status independently.
+
+### TTS Scheduler Semantics
+
+The main app does not create TTS jobs directly. It forwards `TranslationUpdate` objects to `TTSHandle.submit_translation_update(update)`, which:
+
+* ignores provisional-only updates with no committed append,
+* enforces append-only committed text,
+* segments committed deltas into clauses,
+* queues immutable clauses for synthesis,
+* keeps synthesis and playback as separate worker queues.
+
+### Backend Support
+
+Current backend status:
+
+* `system`: active default via `pyttsx3`; usable in this environment.
+* `kokoro`: runtime synthesis is now wired through `kokoro.KPipeline` with a default `af_heart` voice and 24 kHz mono output.
+
+The settings UI now lets you switch between `system` and `kokoro` backends. Kokoro may download model or voice assets on first use.
+
 ## ⚙️ Configuration & Settings
 
 Right-click the overlay to access the settings menu:
@@ -118,9 +190,10 @@ live-video-translator/
 ├── requirements.txt       # Python dependencies
 └── src/
     ├── audio.py           # System audio loopback recording
-    ├── gui.py             # Tkinter overlay & Settings window
-    ├── transcriber.py     # Whisper AI logic & Hallucination filter
-    └── tts.py             # Text-to-Speech engine
+    ├── gui.py             # Tkinter overlay, runtime status, playback state
+    ├── streaming_contracts.py  # Shared streaming and playback contracts
+    ├── transcriber.py     # Whisper streaming decode and commit logic
+    └── tts.py             # Queued TTS scheduler and backend abstraction
 ```
 
 ## 🐛 Troubleshooting
@@ -144,7 +217,14 @@ To build a small audio regression corpus, add fixture clips under `tests/fixture
 python tests/run_replay_suite.py --manifest tests/replay_manifest.json --keep-summaries
 ```
 
-This is the intended verification path for tuning VAD thresholds, end-of-file flush behavior, and emission filtering decisions against real clips.
+Replay summaries now reflect the streaming contract directly:
+
+* `emitted_text` contains each immutable `committed_append` chunk as it was emitted.
+* `final_committed_text` is the append-only aggregate committed transcript for the clip.
+* `revision_ids`, `commit_ids`, and `clause_ids` let the suite verify monotonic contract behavior.
+* `append_only_valid` flags whether the replay maintained append-only committed growth.
+
+This is the intended verification path for tuning VAD thresholds, end-of-file flush behavior, preview confirmation behavior, and streaming commit chunking against real clips.
 
 ## 📜 License
 

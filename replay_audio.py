@@ -56,6 +56,7 @@ def run_replay(args):
             "revision_id": update.revision_id,
             "commit_id": update.commit_id,
             "clause_id": update.clause.clause_id if update.clause is not None else None,
+            "committed_text": update.committed_text,
             "status": dict(status),
         }
         emitted_events.append(event)
@@ -98,12 +99,45 @@ def run_replay(args):
             if args.realtime:
                 time.sleep(len(block) / sample_rate)
 
-        flush_completed = transcriber.flush(timeout=max(args.max_utterance_seconds + 5.0, 5.0))
+        flush_timeout = max(args.max_utterance_seconds + (len(audio) / sample_rate) + 5.0, 10.0)
+        flush_completed = transcriber.flush(timeout=flush_timeout)
     finally:
         transcriber.stop()
 
     runtime_config = transcriber.get_runtime_config()
     final_status = dict(transcriber.status)
+    final_committed_text = ""
+    append_only_valid = True
+    last_commit_id = None
+    last_revision_id = None
+    last_clause_id = None
+    last_committed_text = ""
+
+    for event in emitted_events:
+        revision_id = event["revision_id"]
+        commit_id = event["commit_id"]
+        clause_id = event["clause_id"]
+        text = event["text"]
+        committed_text = event["committed_text"]
+
+        if last_revision_id is not None and revision_id < last_revision_id:
+            append_only_valid = False
+        if last_commit_id is not None and commit_id < last_commit_id:
+            append_only_valid = False
+        if clause_id is not None and last_clause_id is not None and clause_id < last_clause_id:
+            append_only_valid = False
+
+        if not committed_text.startswith(last_committed_text):
+            append_only_valid = False
+        if text and not committed_text.endswith(text):
+            append_only_valid = False
+        final_committed_text = committed_text
+        last_revision_id = revision_id
+        last_commit_id = commit_id
+        last_committed_text = committed_text
+        if clause_id is not None:
+            last_clause_id = clause_id
+
     summary = {
         "input": str(args.input),
         "sample_rate": sample_rate,
@@ -115,6 +149,11 @@ def run_replay(args):
         "emission_count": len(emitted_events),
         "emitted_text": [event["text"] for event in emitted_events],
         "detected_languages": [event["detected_language"] for event in emitted_events],
+        "revision_ids": [event["revision_id"] for event in emitted_events],
+        "commit_ids": [event["commit_id"] for event in emitted_events],
+        "clause_ids": [event["clause_id"] for event in emitted_events],
+        "final_committed_text": final_committed_text,
+        "append_only_valid": append_only_valid,
         "status_sequence": [event["runtime_state"] for event in status_events],
         "runtime_config": runtime_config,
         "final_status": final_status,

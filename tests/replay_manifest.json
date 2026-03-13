@@ -10,13 +10,15 @@
       "expect": {
         "flush_completed": true,
         "emission_count": 1,
-        "contains_any_text": [
+        "append_only_valid": true,
+        "monotonic_revision_ids": true,
+        "monotonic_commit_ids": true,
+        "monotonic_clause_ids": true,
+        "final_contains_any_text": [
           "lazy dog",
           "over the lazy dog"
         ],
-        "detected_languages_exact": [
-          "en"
-        ],
+        "detected_language_all": "en",
         "require_status": [
           "processing",
           "listening"
@@ -39,15 +41,16 @@
       "block_seconds": 0.25,
       "expect": {
         "flush_completed": true,
-        "emission_count": 2,
-        "contains_any_text": [
+        "min_emission_count": 2,
+        "append_only_valid": true,
+        "monotonic_revision_ids": true,
+        "monotonic_commit_ids": true,
+        "monotonic_clause_ids": true,
+        "final_contains_any_text": [
           "timing checks",
           "timing check"
         ],
-        "detected_languages_exact": [
-          "en",
-          "en"
-        ],
+        "detected_language_all": "en",
         "require_status": [
           "speech_detected",
           "processing",
@@ -67,14 +70,16 @@
       "block_seconds": 0.25,
       "expect": {
         "flush_completed": true,
-        "emission_count": 1,
-        "contains_all_text": [
+        "min_emission_count": 1,
+        "append_only_valid": true,
+        "monotonic_revision_ids": true,
+        "monotonic_commit_ids": true,
+        "monotonic_clause_ids": true,
+        "final_contains_all_text": [
           "background noise",
           "threshold"
         ],
-        "detected_languages_exact": [
-          "en"
-        ],
+        "detected_language_all": "en",
         "require_status": [
           "speech_detected",
           "processing",
@@ -97,13 +102,15 @@
       "block_seconds": 0.25,
       "expect": {
         "flush_completed": true,
-        "emission_count": 1,
-        "contains_all_text": [
+        "min_emission_count": 1,
+        "append_only_valid": true,
+        "monotonic_revision_ids": true,
+        "monotonic_commit_ids": true,
+        "monotonic_clause_ids": true,
+        "final_contains_all_text": [
           "ends on speech"
         ],
-        "detected_languages_exact": [
-          "en"
-        ],
+        "detected_language_all": "en",
         "require_status": [
           "processing",
           "listening"
@@ -122,14 +129,16 @@
       "block_seconds": 0.25,
       "expect": {
         "flush_completed": true,
-        "emission_count": 1,
-        "contains_all_text": [
+        "min_emission_count": 1,
+        "append_only_valid": true,
+        "monotonic_revision_ids": true,
+        "monotonic_commit_ids": true,
+        "monotonic_clause_ids": true,
+        "final_contains_all_text": [
           "background music",
           "spoken sentence"
         ],
-        "detected_languages_exact": [
-          "en"
-        ],
+        "detected_language_all": "en",
         "require_status": [
           "speech_detected",
           "processing",
@@ -153,6 +162,10 @@
       "expect": {
         "flush_completed": true,
         "emission_count": 0,
+        "append_only_valid": true,
+        "monotonic_revision_ids": true,
+        "monotonic_commit_ids": true,
+        "monotonic_clause_ids": true,
         "require_status": [
           "speech_detected",
           "processing",
@@ -175,14 +188,16 @@
       "block_seconds": 0.25,
       "expect": {
         "flush_completed": true,
-        "emission_count": 1,
-        "contains_all_text": [
+        "min_emission_count": 1,
+        "append_only_valid": true,
+        "monotonic_revision_ids": true,
+        "monotonic_commit_ids": true,
+        "monotonic_clause_ids": true,
+        "final_contains_all_text": [
           "quiet lead in",
           "detected cleanly"
         ],
-        "detected_languages_exact": [
-          "en"
-        ],
+        "detected_language_all": "en",
         "require_status": [
           "processing",
           "listening"

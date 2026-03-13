@@ -74,7 +74,10 @@ DEBUG_LOG_PATH = Path(__file__).resolve().parent.parent / "omnibabel-debug.jsonl
 DOMAIN_PATTERN = re.compile(r"\b[a-z0-9-]+\.(com|org|net|tv|io|co)\b", re.IGNORECASE)
 PHONE_PATTERN = re.compile(r"(?:\+?\d[\d\-\s().]{6,}\d)")
 STREAMING_PREVIEW_HOP_SECONDS = 0.75
+STREAMING_PREVIEW_COMMIT_HOP_SECONDS = 1.5
 STREAMING_MIN_PREVIEW_SECONDS = 1.0
+STREAMING_PREVIEW_CONFIRMATION_COUNT = 3
+CLAUSE_ENDING_CHARS = ".?!;:"
 
 
 class Transcriber:
@@ -120,7 +123,9 @@ class Transcriber:
         self.committed_text = ""
         self.current_utterance_committed_prefix = ""
         self.last_preview_hypothesis = ""
+        self.preview_hypothesis_history = []
         self.last_preview_decode_sample = 0
+        self.last_preview_commit_sample = 0
         self.current_utterance_started_committing = False
         self.noise_floor = 0.0
         self.ambient_frame_history = []
@@ -651,7 +656,9 @@ class Transcriber:
     def _reset_current_utterance_state(self):
         self.current_utterance_committed_prefix = ""
         self.last_preview_hypothesis = ""
+        self.preview_hypothesis_history = []
         self.last_preview_decode_sample = 0
+        self.last_preview_commit_sample = 0
         self.current_utterance_started_committing = False
 
     def _common_word_prefix(self, left_text, right_text):
@@ -663,6 +670,81 @@ class Transcriber:
                 break
             common.append(right_word)
         return " ".join(common)
+
+    def _rolling_common_word_prefix(self, hypotheses):
+        normalized = [hypothesis.strip() for hypothesis in hypotheses if hypothesis and hypothesis.strip()]
+        if not normalized:
+            return ""
+        stable_prefix = normalized[0]
+        for hypothesis in normalized[1:]:
+            stable_prefix = self._common_word_prefix(stable_prefix, hypothesis)
+            if not stable_prefix:
+                break
+        return stable_prefix
+
+    def _confirmed_prefix_from_history(self, hypotheses, required_confirmations):
+        normalized = [hypothesis.strip() for hypothesis in hypotheses if hypothesis and hypothesis.strip()]
+        if len(normalized) < required_confirmations:
+            return ""
+
+        recent = normalized[-required_confirmations:]
+        common_prefix = self._rolling_common_word_prefix(recent)
+        if not common_prefix:
+            return ""
+        return common_prefix
+
+    def _determine_stable_prefix(self, hypothesis_text, is_final):
+        if is_final:
+            return hypothesis_text
+
+        self.preview_hypothesis_history.append(hypothesis_text)
+        if len(self.preview_hypothesis_history) > STREAMING_PREVIEW_CONFIRMATION_COUNT:
+            self.preview_hypothesis_history = self.preview_hypothesis_history[-STREAMING_PREVIEW_CONFIRMATION_COUNT:]
+
+        return self._confirmed_prefix_from_history(
+            self.preview_hypothesis_history,
+            required_confirmations=STREAMING_PREVIEW_CONFIRMATION_COUNT,
+        )
+
+    def _apply_preview_commit_gate(self, stable_prefix_text, chunk_end_sample, is_final):
+        if is_final or not stable_prefix_text:
+            return stable_prefix_text
+        if len(stable_prefix_text) <= len(self.current_utterance_committed_prefix):
+            return stable_prefix_text
+        if not self.current_utterance_committed_prefix:
+            return stable_prefix_text
+
+        preview_commit_hop_samples = int(TARGET_RATE * STREAMING_PREVIEW_COMMIT_HOP_SECONDS)
+        if self.last_preview_commit_sample and (chunk_end_sample - self.last_preview_commit_sample) < preview_commit_hop_samples:
+            return self.current_utterance_committed_prefix
+        return stable_prefix_text
+
+    def _apply_preview_boundary_preference(self, stable_prefix_text, is_final):
+        if is_final or not stable_prefix_text:
+            return stable_prefix_text
+        if len(stable_prefix_text) <= len(self.current_utterance_committed_prefix):
+            return stable_prefix_text
+
+        search_start = len(self.current_utterance_committed_prefix)
+        last_boundary_index = -1
+        for index in range(search_start, len(stable_prefix_text)):
+            if stable_prefix_text[index] not in CLAUSE_ENDING_CHARS:
+                continue
+            next_index = index + 1
+            if next_index < len(stable_prefix_text) and not stable_prefix_text[next_index].isspace():
+                continue
+            last_boundary_index = next_index
+
+        if last_boundary_index <= 0:
+            committed_prefix = self.current_utterance_committed_prefix.rstrip()
+            if committed_prefix and committed_prefix[-1] in CLAUSE_ENDING_CHARS:
+                return self.current_utterance_committed_prefix
+            return stable_prefix_text
+
+        boundary_prefix = stable_prefix_text[:last_boundary_index].rstrip()
+        if len(boundary_prefix) < len(self.current_utterance_committed_prefix):
+            return self.current_utterance_committed_prefix
+        return boundary_prefix
 
     def _build_streaming_update(self, hypothesis_text, stable_prefix_text, chunk_start_sample, audio_chunk_samples, is_final):
         committed_append = ""
@@ -759,7 +841,13 @@ class Transcriber:
             )
 
             if hypothesis_text and not self.is_hallucination(hypothesis_text):
-                stable_prefix = hypothesis_text if is_final else self._common_word_prefix(self.last_preview_hypothesis, hypothesis_text)
+                stable_prefix = self._determine_stable_prefix(hypothesis_text, is_final)
+                stable_prefix = self._apply_preview_boundary_preference(stable_prefix, is_final=is_final)
+                stable_prefix = self._apply_preview_commit_gate(
+                    stable_prefix,
+                    chunk_end_sample=chunk_start_sample + len(audio_chunk),
+                    is_final=is_final,
+                )
                 update = self._build_streaming_update(
                     hypothesis_text,
                     stable_prefix,
@@ -770,6 +858,8 @@ class Transcriber:
                 self._emit_translation_update(update)
                 self.last_preview_hypothesis = hypothesis_text
                 self.last_preview_decode_sample = chunk_start_sample + len(audio_chunk)
+                if update.committed_append:
+                    self.last_preview_commit_sample = chunk_start_sample + len(audio_chunk)
                 if update.committed_append.strip():
                     print(f"> {update.committed_append.strip()}")
                 self._emit_status(runtime_state="listening", message="Listening for speech")

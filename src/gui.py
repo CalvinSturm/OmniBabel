@@ -44,7 +44,9 @@ class OverlayGUI:
         tts_toggle_callback,
         tts_device_callback,
         tts_voice_callback,
+        tts_backend_callback,
         get_voices_callback,
+        get_tts_backends_callback,
         model_change_callback,
         translation_settings_callback,
         initial_settings,
@@ -54,7 +56,9 @@ class OverlayGUI:
         self.tts_toggle_callback = tts_toggle_callback
         self.tts_device_callback = tts_device_callback
         self.tts_voice_callback = tts_voice_callback
+        self.tts_backend_callback = tts_backend_callback
         self.get_voices_callback = get_voices_callback
+        self.get_tts_backends_callback = get_tts_backends_callback
         self.model_change_callback = model_change_callback
         self.translation_settings_callback = translation_settings_callback
         self.settings_change_callback = settings_change_callback
@@ -65,6 +69,7 @@ class OverlayGUI:
         self.opacity = initial_settings.get("opacity", DEFAULT_OPACITY)
         self.wrap_width = 800
         self.tts_enabled = initial_settings.get("tts_enabled", False)
+        self.selected_tts_backend = initial_settings.get("tts_backend", "system")
         self.selected_device_index = initial_settings.get("output_device_index")
         self.selected_voice_id = initial_settings.get("voice_id")
 
@@ -322,6 +327,7 @@ class OverlayGUI:
                 "font_size": self.font_size,
                 "opacity": self.opacity,
                 "tts_enabled": self.tts_enabled,
+                "tts_backend": self.selected_tts_backend,
                 "voice_id": self.selected_voice_id,
                 "output_device_index": self.selected_device_index,
             }
@@ -614,19 +620,38 @@ class OverlayGUI:
             command=lambda: self._on_tts_toggle(tts_var.get()),
         ).pack()
 
+        tk.Label(sw, text="TTS Backend:").pack()
+        backend_options = self.get_tts_backends_callback()
+        backend_combo = ttk.Combobox(sw, values=backend_options, state="readonly", width=40)
+        backend_combo.pack(pady=2, padx=10)
+        if self.selected_tts_backend in backend_options:
+            backend_combo.set(self.selected_tts_backend)
+        elif backend_options:
+            backend_combo.current(0)
+            self.selected_tts_backend = backend_options[0]
+
         tk.Label(sw, text="Voice Personality:").pack()
         available_voices = self.get_voices_callback()
-        voice_names = [voice["name"] for voice in available_voices]
-        voice_combo = ttk.Combobox(sw, values=voice_names, state="readonly", width=40)
+        voice_combo = ttk.Combobox(sw, values=[], state="readonly", width=40)
         voice_combo.pack(pady=2, padx=10)
 
-        if self.selected_voice_id:
-            for voice in available_voices:
-                if voice["id"] == self.selected_voice_id:
+        def refresh_voice_combo(voices, preferred_voice_id=None):
+            voice_names = [voice["name"] for voice in voices]
+            voice_combo.config(values=voice_names)
+            if not voices:
+                voice_combo.set("")
+                self.selected_voice_id = None
+                return
+            selected_id = preferred_voice_id or self.selected_voice_id
+            for voice in voices:
+                if voice["id"] == selected_id:
                     voice_combo.set(voice["name"])
-                    break
-        elif voice_names:
+                    self.selected_voice_id = voice["id"]
+                    return
             voice_combo.current(0)
+            self.selected_voice_id = voices[0]["id"]
+
+        refresh_voice_combo(available_voices, preferred_voice_id=self.selected_voice_id)
 
         def on_voice_change(event):
             voice_name = voice_combo.get()
@@ -638,6 +663,18 @@ class OverlayGUI:
                     break
 
         voice_combo.bind("<<ComboboxSelected>>", on_voice_change)
+
+        def on_backend_change(event):
+            nonlocal available_voices
+            backend_name = backend_combo.get()
+            result = self.tts_backend_callback(backend_name)
+            self.selected_tts_backend = result["tts_backend"]
+            self.selected_voice_id = result["voice_id"]
+            available_voices = self.get_voices_callback()
+            refresh_voice_combo(available_voices, preferred_voice_id=self.selected_voice_id)
+            self.persist_settings()
+
+        backend_combo.bind("<<ComboboxSelected>>", on_backend_change)
 
         tk.Label(sw, text="Output Device:").pack()
         device_list = self.get_audio_devices()

@@ -33,6 +33,7 @@ DEFAULT_SETTINGS = {
     "max_utterance_seconds": DEFAULT_MAX_UTTERANCE_SECONDS,
     "debug_logging_enabled": DEFAULT_DEBUG_LOGGING,
     "tts_enabled": False,
+    "tts_backend": "system",
     "voice_id": None,
     "output_device_index": None,
 }

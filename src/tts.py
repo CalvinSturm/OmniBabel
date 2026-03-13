@@ -6,6 +6,7 @@ import re
 import tempfile
 import threading
 
+import numpy as np
 import pythoncom
 import pyttsx3
 import sounddevice as sd
@@ -21,6 +22,8 @@ from src.streaming_contracts import (
 )
 
 CLAUSE_ENDING_CHARS = ".?!;:"
+KOKORO_DEFAULT_SAMPLE_RATE = 24000
+KOKORO_DEFAULT_VOICE = "af_heart"
 
 
 class TTSBackend:
@@ -75,9 +78,45 @@ class KokoroBackend(TTSBackend):
         if spec is None:
             raise RuntimeError("Kokoro backend requested but the 'kokoro' package is not installed")
         self.kokoro = importlib.import_module("kokoro")
+        self.pipeline_cache = {}
+
+    def get_voices(self):
+        return [{"id": KOKORO_DEFAULT_VOICE, "name": "Kokoro af_heart"}]
+
+    def _get_lang_code(self, voice_id):
+        voice_name = (voice_id or KOKORO_DEFAULT_VOICE).strip()
+        return voice_name[0].lower() if voice_name else "a"
+
+    def _get_pipeline(self, lang_code):
+        pipeline = self.pipeline_cache.get(lang_code)
+        if pipeline is None:
+            pipeline = self.kokoro.KPipeline(lang_code=lang_code, device="cpu")
+            self.pipeline_cache[lang_code] = pipeline
+        return pipeline
 
     def synthesize(self, text, voice_id=None):
-        raise NotImplementedError("Kokoro backend wiring is not yet available in this environment")
+        if not text or not text.strip():
+            raise ValueError("Kokoro synthesize requires non-empty text")
+
+        selected_voice = voice_id or KOKORO_DEFAULT_VOICE
+        pipeline = self._get_pipeline(self._get_lang_code(selected_voice))
+        audio_parts = []
+
+        for result in pipeline(text.strip(), voice=selected_voice, split_pattern=r"\n+"):
+            audio = getattr(result, "audio", None)
+            if audio is None:
+                continue
+            if hasattr(audio, "detach"):
+                chunk = audio.detach().cpu().numpy()
+            else:
+                chunk = np.asarray(audio)
+            if chunk.size:
+                audio_parts.append(np.asarray(chunk, dtype=np.float32))
+
+        if not audio_parts:
+            raise RuntimeError("Kokoro synthesis returned no audio")
+
+        return np.concatenate(audio_parts).astype(np.float32), KOKORO_DEFAULT_SAMPLE_RATE
 
 
 class TTSHandle:

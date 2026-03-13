@@ -5,7 +5,7 @@
   "block_seconds": 0.25,
   "realtime": false,
   "flush_completed": true,
-  "elapsed_seconds": 0.6,
+  "elapsed_seconds": 5.601,
   "emission_count": 1,
   "emitted_text": [
     "Comment even when the file ends on speech."
@@ -13,6 +13,17 @@
   "detected_languages": [
     "en"
   ],
+  "revision_ids": [
+    9
+  ],
+  "commit_ids": [
+    1
+  ],
+  "clause_ids": [
+    1
+  ],
+  "final_committed_text": "Comment even when the file ends on speech.",
+  "append_only_valid": true,
   "status_sequence": [
     "loading_model",
     "listening",
@@ -21,15 +32,39 @@
     "listening",
     "listening",
     "listening",
+    "processing",
+    "processing",
     "listening",
     "listening",
     "listening",
     "listening",
+    "processing",
+    "processing",
     "listening",
     "listening",
     "listening",
+    "processing",
+    "processing",
     "listening",
     "listening",
+    "processing",
+    "processing",
+    "listening",
+    "listening",
+    "processing",
+    "processing",
+    "listening",
+    "listening",
+    "processing",
+    "processing",
+    "listening",
+    "listening",
+    "processing",
+    "processing",
+    "listening",
+    "listening",
+    "processing",
+    "processing",
     "listening",
     "processing",
     "processing",
