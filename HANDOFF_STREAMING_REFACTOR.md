@@ -245,6 +245,135 @@ Likely further improvements:
 This work belongs primarily in:
 - `src/transcriber.py`
 
+## Execution Checklist
+
+Use this as the recommended next execution sequence for moving the repo from a solid prototype toward production-ready behavior.
+
+### Phase 1. Bound queues and define overload behavior
+
+Goal:
+- prevent unbounded latency drift and memory growth under sustained load
+
+Checklist:
+- [ ] replace unbounded queues with bounded queues where live backlog can accumulate:
+  - `main.py` audio queue
+  - `src/audio.py` raw capture queue
+  - `src/tts.py` synthesis queue
+  - `src/tts.py` playback queue
+- [ ] add queue sizing constants to `config.py`
+- [ ] define overload policy per stage:
+  - capture: drop oldest blocks or collapse stale backlog
+  - transcription: cap buffered audio age and discard stale data when necessary
+  - TTS: flush, merge, or drop stale queued work instead of allowing indefinite lag
+- [ ] emit explicit degraded/overloaded runtime state instead of silently drifting
+
+Success criteria:
+- [ ] overload does not cause unbounded queue growth
+- [ ] latency stabilizes or sheds load instead of growing forever
+
+### Phase 2. Add queue-depth and latency telemetry
+
+Goal:
+- make real-time health observable during manual runs and replay runs
+
+Checklist:
+- [ ] add telemetry for:
+  - capture queue depth
+  - transcription queue depth
+  - TTS synthesis queue depth
+  - TTS playback queue depth
+  - dropped block/job counts
+  - capture-to-commit latency
+  - capture-to-playback latency
+- [ ] extend runtime status payloads to include compact telemetry
+- [ ] expose concise telemetry in the overlay status rows
+- [ ] add richer telemetry to debug logging where appropriate
+
+Success criteria:
+- [ ] manual testing can distinguish healthy, degraded, and overloaded states
+- [ ] telemetry is available for before/after comparison during tuning
+
+### Phase 3. Expand replay coverage around overload, latency, and filtering
+
+Goal:
+- make operational regressions testable instead of anecdotal
+
+Checklist:
+- [ ] extend `replay_audio.py` summaries with latency and drop metrics
+- [ ] add replay cases for:
+  - sustained backlog / overload
+  - long continuous speech
+  - bilingual or language-switching clips
+  - known filtering false positives
+  - subtitle/promo metadata junk
+- [ ] add targeted unit/integration coverage for queue saturation and TTS shedding behavior
+- [ ] update `tests/replay_manifest.json`
+- [ ] update `tests/fixtures/README.md`
+
+Success criteria:
+- [ ] replay suite can detect latency drift and overload behavior regressions
+- [ ] filtering regressions are covered by explicit fixtures or assertions
+
+### Phase 4. Introduce runtime presets
+
+Goal:
+- let users choose latency vs quality without hand-tuning every knob
+
+Checklist:
+- [ ] add `Live`, `Balanced`, and `Accuracy` presets
+- [ ] define preset values for at least:
+  - model choice
+  - beam size
+  - best-of
+  - patience
+  - preview/commit cadence
+  - relevant VAD/end-silence defaults if needed
+- [ ] persist preset selection in settings
+- [ ] expose preset selection in the settings UI
+- [ ] preserve advanced manual controls for override cases
+
+Success criteria:
+- [ ] CPU users get a realistic low-latency default path
+- [ ] users can switch between responsiveness and quality intentionally
+
+### Phase 5. Split installation profiles
+
+Goal:
+- make optional capabilities explicit instead of implied
+
+Checklist:
+- [ ] define installation profiles or clearly documented variants for:
+  - core runtime
+  - CUDA support
+  - Kokoro support
+  - dev / replay / test tooling
+- [ ] document that Torch is optional and only affects CUDA/device behavior
+- [ ] document that Kokoro is optional
+- [ ] align startup/setup messaging with the supported install variants
+- [ ] update `README.md` accordingly
+
+Success criteria:
+- [ ] fresh users can choose the correct install path without guesswork
+- [ ] optional features are not represented as always present
+
+### Phase 6. Tighten public positioning
+
+Goal:
+- make the project description match the current implementation
+
+Checklist:
+- [ ] update GitHub repo description/about text manually to reflect current scope
+- [ ] keep positioning aligned with actual implementation:
+  - Windows-only
+  - local live captions / translation overlay
+  - translation to English
+  - transcription in source language
+  - optional local spoken playback
+- [ ] keep `README.md` and `AGENTS.md` aligned with that positioning
+
+Success criteria:
+- [ ] public copy does not imply universal multilingual dubbing or target-language voice output beyond what the code actually supports
+
 ## Known Caveats
 
 ### 1. Current agreement logic is still heuristic
