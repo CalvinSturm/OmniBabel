@@ -254,6 +254,15 @@ Use this as the recommended next execution sequence for moving the repo from a s
 Goal:
 - prevent unbounded latency drift and memory growth under sustained load
 
+Target stage policy:
+
+| Stage | Backlog priority | Overload rule |
+| --- | --- | --- |
+| Capture | freshness over completeness | drop oldest audio blocks once buffered audio age exceeds the configured cap |
+| Transcription input | freshness over completeness | discard stale buffered audio when backlog exceeds the configured latency budget |
+| TTS synthesis | committed meaning over full history | drop or merge superseded stale clauses before synthesis when spoken output is falling behind |
+| TTS playback | bounded spoken lag | never allow spoken playback to remain more than the configured max lag behind committed text |
+
 Checklist:
 - [ ] replace unbounded queues with bounded queues where live backlog can accumulate:
   - `main.py` audio queue
@@ -276,6 +285,13 @@ Success criteria:
 Goal:
 - make real-time health observable during manual runs and replay runs
 
+Telemetry ownership:
+- runtime telemetry should have a single ownership point instead of being spread ad hoc across callbacks
+- preferred shape:
+  - transcriber-owned runtime telemetry folded into runtime status payloads for capture/transcription-side measurements
+  - TTS-owned playback telemetry folded into playback state or a closely paired payload for synthesis/playback-side measurements
+- if this becomes too crowded for the existing payloads, introduce an explicit shared telemetry dataclass/contract rather than inventing unrelated dictionaries in multiple modules
+
 Checklist:
 - [ ] add telemetry for:
   - capture queue depth
@@ -292,6 +308,12 @@ Checklist:
 Success criteria:
 - [ ] manual testing can distinguish healthy, degraded, and overloaded states
 - [ ] telemetry is available for before/after comparison during tuning
+
+Smoke-test targets to define during implementation:
+- [ ] expected healthy queue depths during normal operation
+- [ ] acceptable capture-to-commit latency range
+- [ ] acceptable capture-to-playback latency range
+- [ ] degraded-but-acceptable thresholds before load shedding is triggered
 
 ### Phase 3. Expand replay coverage around overload, latency, and filtering
 
@@ -356,6 +378,12 @@ Success criteria:
 - [ ] fresh users can choose the correct install path without guesswork
 - [ ] optional features are not represented as always present
 
+Preferred future package/profile shape:
+- `core`
+- `cuda`
+- `kokoro`
+- `dev/replay/test`
+
 ### Phase 6. Tighten public positioning
 
 Goal:
@@ -381,6 +409,8 @@ Success criteria:
 It is materially stronger than the original consecutive-prefix method, but it still relies on pragmatic word-prefix agreement and boundary trimming rather than a full local-agreement decoder.
 
 ### 2. `clause_id` ownership is currently split conceptually
+
+This is the main remaining contract ambiguity and should be treated as an explicit architectural decision pending.
 
 The contracts expect immutable spoken units.
 Right now:
