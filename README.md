@@ -1,251 +1,242 @@
-# 🌐 OmniBabel
+# OmniBabel
 
-**Real-Time Universal Audio Translator & Subtitler**
+**Real-time desktop audio translation and transcription overlay for Windows**
 
-OmniBabel is a local AI tool that captures live audio from your computer (movies, streams, Zoom meetings), translates it to English instantly, and displays it as a customizable, transparent subtitle overlay on your screen.
+OmniBabel captures system audio through WASAPI loopback, runs local `faster-whisper` inference, and renders the result in a floating on-screen subtitle overlay. It can translate supported source languages into English or transcribe speech in the source language, and it can optionally read committed output aloud through a local TTS backend.
 
 ![Python](https://img.shields.io/badge/python-3.10--3.12-3776AB?style=flat&logo=python&logoColor=white)
-![AI](https://img.shields.io/badge/AI-Faster_Whisper-green?style=flat)
-![License](https://img.shields.io/badge/License-MIT-purple?style=flat)
-![Privacy](https://img.shields.io/badge/Privacy-100%25_Local-darkgreen?style=flat&logo=lock&logoColor=white)
+![Windows](https://img.shields.io/badge/platform-Windows-0078D6?style=flat&logo=windows&logoColor=white)
+![Privacy](https://img.shields.io/badge/privacy-local%20processing-2E7D32?style=flat&logo=shield&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-6f42c1?style=flat)
 
-## ✨ Features
+## Features
 
-*   **Live Translation:** Captures system audio (Loopback) and translates foreign languages to English in near real-time.
-*   **🔒 Local & Secure:** Running entirely on your machine means your meetings, movies, and conversations remain private. No cloud processing, no data harvesting.
-*   **Floating Overlay:**
-    *   **Transparent Background:** Adjustable opacity (from solid box to floating text).
-    *   **Click-through:** Interactions work through the clear parts of the window.
-    *   **Draggable & Resizable:** Move it anywhere on your desktop.
-*   **Text-to-Speech (TTS):** Reads the translated English captions aloud using installed system voices.
-*   **Customization:** Change font size, text color, background color, box width, and AI model size via a Settings GUI.
-*   **Audio Routing:** Supports splitting audio output to prevent echo/feedback loops (requires VB-Cable).
+- Local-only speech processing after model download.
+- Live overlay with separate committed text and provisional preview text.
+- Translation mode (`source -> English`) and transcription mode (`source -> source`).
+- Runtime-switchable Whisper model and processing device (`cpu` or `cuda`).
+- Detection tuning controls for VAD threshold, end silence, and utterance length.
+- Optional TTS playback with `system` (`pyttsx3`) and `kokoro` backends when available.
+- Repo-local model/cache storage under `models/` instead of user-global cache directories.
+- Replay tooling for regression runs against saved audio fixtures.
 
-## 🔒 Privacy & Security
+## Current Platform Scope
 
-OmniBabel is designed for users who care about data sovereignty. Unlike browser extensions or cloud-based translation services, **OmniBabel runs completely offline**.
+OmniBabel currently targets **Windows only**.
 
-*   **100% Local Processing:** All AI inference (listening, transcribing, and translating) happens locally on your CPU/GPU using `faster-whisper`.
-*   **No Data Exfiltration:** Your audio streams and translated subtitles never leave your computer. Nothing is sent to OpenAI, Google, or any third-party server.
-*   **No API Keys Required:** You do not need to create an account, pay for credits, or hand over personal data to use the tool.
-*   **Works Offline:** Once the models are downloaded, you can disconnect your internet and the tool will continue to function perfectly.
+The live app depends on:
 
-## 🛠️ Prerequisites
+- WASAPI loopback capture via `PyAudioWPatch`
+- Tkinter overlay windows
+- Windows audio output device selection
 
-1.  **Python 3.10-3.12 on Windows** installed on your system.
-2.  **FFmpeg** (Required for audio processing):
-    *   *Windows:* Download from [gyan.dev](https://www.gyan.dev/tt/ffmpeg/git/essentials/), extract, and add the `bin` folder to your System PATH.
-3.  **(Optional) VB-Cable:** Recommended if you want to use the Text-to-Speech feature to avoid the microphone hearing the computer voice. [Download Here](https://vb-audio.com/Cable/).
+`main.py` will refuse startup on non-Windows platforms.
 
-## 📦 Installation
+## Privacy
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/calvinsturm/OmniBabel.git
-    cd OmniBabel
-    ```
+OmniBabel is designed for local execution:
 
-2.  **Create a Virtual Environment (Recommended):**
-    ```bash
-    python -m venv venv
-    # Windows
-    venv\Scripts\activate
-    # Mac/Linux
-    source venv/bin/activate
-    ```
+- Whisper inference runs on your machine.
+- TTS runs locally through installed system voices or the local Kokoro runtime.
+- Audio and text are not sent to a hosted API by the application itself.
 
-3.  **Install Dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+Note: the first run of a model/backend may download assets from upstream package/model sources. After assets are present in `models/`, normal use can stay offline.
 
-4.  **Optional CUDA acceleration:**
-    Install a CUDA-enabled PyTorch build and any matching NVIDIA runtime packages for your environment if you want GPU inference. The base requirements target CPU mode by default.
+## Requirements
 
-## 🚀 Usage
+- Windows
+- Python 3.10, 3.11, or 3.12
+- FFmpeg available on `PATH`
+- A working loopback-capable output device
+- Optional: CUDA-capable NVIDIA environment if you want GPU inference
 
-1.  **Run the Application:**
-    ```bash
-    python main.py
-    ```
+## Installation
 
-2.  **Controls:**
-    *   **Left Click + Drag:** Move the subtitle window.
-    *   **Shift + Left Click + Drag Up/Down:** Increase/Decrease Font Size.
-    *   **Mouse Wheel:** Increase/Decrease Background Opacity.
-    *   **Right Click:** Open **Settings Menu**.
-    *   **Double Right Click:** Exit the application.
-
-## 🔁 Streaming Contract
-
-OmniBabel now uses a contract-based streaming pipeline:
-
-```text
-audio -> provisional decode -> append-only committed text -> clause chunking
--> queued TTS synthesis/playback -> playback state updates
+```powershell
+git clone https://github.com/CalvinSturm/OmniBabel.git
+cd OmniBabel
+py -3.12 -m venv venv
+.\venv\Scripts\activate
+python -m pip install -r requirements.txt
 ```
 
-The runtime invariants are:
+If `ffmpeg` is missing, install it separately and add it to `PATH`.
 
-* `revision_id` tracks mutable UI state.
-* `commit_id` tracks append-only committed state.
-* `clause_id` identifies immutable spoken units.
-* `provisional_text` may revise between updates.
-* `committed_text` may only append.
-* TTS only consumes `committed_append` and final committed clauses.
+## Run
 
-### `TranslationUpdate`
+```powershell
+python main.py
+```
 
-`src/transcriber.py` emits `TranslationUpdate` objects instead of raw text callbacks.
+On startup, the app validates:
 
-* `provisional_text`: full UI-facing string including any revisable suffix.
-* `committed_text`: append-only transcript accumulated so far.
-* `committed_append`: the immutable suffix added at the current `commit_id`.
-* `clause`: optional final-clause metadata for immutable spoken spans.
-* `audio_start_ms` / `audio_end_ms`: source timing for the update window.
+- Windows platform support
+- Python version
+- required Python packages
+- FFmpeg availability
+- loopback audio availability
 
-### Current Streaming Agreement Behavior
+If a required dependency is missing, the app shows a startup error dialog and exits.
 
-The current transcriber logic is no longer a single previous/current prefix check. It now uses:
+## Overlay Controls
 
-* a rolling preview confirmation window before new preview text can become committed,
-* separate preview decode cadence and preview commit cadence,
-* boundary-aware preview commits that prefer clause-ending punctuation before crossing into the next clause,
-* full final-hypothesis commit on utterance completion.
+- `Left click + drag`: move the overlay
+- `Shift + left click + drag`: resize font
+- `Mouse wheel`: change background opacity
+- `Right click`: open settings
+- `Double right click`: exit
 
-In practice, this means the overlay can still show responsive provisional text, while committed text advances more conservatively and is shaped into more natural immutable chunks before TTS sees it.
+## Settings UI
 
-### Playback State
+Right-click the overlay to open the settings window.
 
-`src/tts.py` emits `PlaybackState` updates for the overlay:
+### AI model settings
 
-* `idle`: no active synthesis or playback work.
-* `queued`: at least one job is waiting in synthesis or playback queues.
-* `synthesizing`: a queued clause is being rendered by the active backend.
-* `playing`: synthesized audio is currently playing.
-* `completed`: a job finished playback.
-* `cancelled`: playback was interrupted or flushed.
-* `error`: synthesis or playback failed.
+- Whisper model: `tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo`, `Systran/faster-distil-whisper-large-v3`
+- Device: `cpu` or `cuda`
+- Source language: auto-detect or a fixed supported language
+- Output mode: `translate` or `transcribe`
+- Target output is derived automatically:
+- `translate` forces English output
+- `transcribe` forces source-language output
 
-The overlay shows committed text and provisional suffix independently, and it can optionally hide the runtime/playback rows for a captions-only view.
+### Detection tuning
 
-### TTS Scheduler Semantics
-
-The main app does not create TTS jobs directly. It forwards `TranslationUpdate` objects to `TTSHandle.submit_translation_update(update)`, which:
-
-* ignores provisional-only updates with no committed append,
-* enforces append-only committed text,
-* segments committed deltas into clauses,
-* queues immutable clauses for synthesis,
-* keeps synthesis and playback as separate worker queues.
-
-### Backend Support
-
-Current backend status:
-
-* `system`: active default via `pyttsx3`; usable in this environment.
-* `kokoro`: runtime synthesis is now wired through `kokoro.KPipeline` with a default `af_heart` voice and 24 kHz mono output.
-
-The settings UI now lets you switch between `system` and `kokoro` backends. The repo can also be prewarmed so Whisper and Kokoro assets are already present before the first real session.
-
-### Local Model Storage
-
-OmniBabel now uses a repo-local root `models` directory for downloaded runtime assets:
-
-* `models/whisper`: Faster-Whisper model files such as `large-v3`, `large-v3-turbo`, and `Systran/faster-distil-whisper-large-v3`
-* `models/huggingface`: Hugging Face cache used by Kokoro and related runtime downloads
-* `models/kokoro`: Kokoro-specific local cache path
-
-This keeps runtime downloads inside the project folder instead of spreading them across a global user cache.
-
-## ⚙️ Configuration & Settings
-
-Right-click the overlay to access the settings menu:
-
-### AI Model Settings
-*   **Model Size:** `large-v3` is now the default for best translation accuracy. Use `distil-large-v3` or `small` only if you need lower latency.
-*   **Device:** Select `cpu` or `cuda` (if you have an NVIDIA GPU).
+- VAD energy threshold
+- End silence seconds
+- Min utterance seconds
+- Max utterance seconds
+- Debug logging toggle
 
 ### Appearance
-*   **Font Size & Colors:** Customize the look of the subtitles.
-*   **Max Width:** Control how wide the text box is before wrapping to a new line.
-*   **Opacity:** 0.0 = Floating text only (ghost mode), 1.0 = Solid background box.
-*   **Show Runtime and TTS Status Rows:** Toggle the bottom two overlay rows on or off for a captions-only overlay.
 
-### Audio & TTS
-*   **Read Aloud:** Toggles the computer voice reading the translations.
-*   **Voice Personality:** Select different system voices (e.g., Microsoft Zira, David).
-*   **Output Device:** *Critical for preventing echo.* Select where the TTS audio plays.
+- Font size
+- Max overlay width
+- Background opacity
+- Show/hide runtime and TTS status rows
+- Text color
+- Background color
 
-## 🎧 preventing Echo (Feedback Loop)
+### Audio / TTS
 
-If you enable "Read Translations Aloud," the computer might "hear" its own voice and try to translate it again. To fix this:
+- Enable or disable read-aloud playback
+- Select TTS backend
+- Select voice
+- Select output device
 
-1.  **Method 1: Headphones (Easiest)**
-    *   Plug in headphones.
-    *   In the App Settings -> **Output Device**, select your Headphones.
-    *   The AI will listen to the system (speakers), but speak into your ears.
+## TTS Backends
 
-2.  **Method 2: Virtual Cable (For Speakers)**
-    *   Install **VB-Cable**.
-    *   Set Windows Output to **CABLE Input**.
-    *   In Windows Sound Settings -> Recording -> **CABLE Output** -> Properties -> Listen -> Check **"Listen to this device"** and select your real speakers.
-    *   In the App Settings, select your **Real Speakers** as the Output Device.
+Current backend support in `src/tts.py`:
 
-## 📂 Project Structure
+- `system`: default backend using `pyttsx3`
+- `kokoro`: optional backend using `kokoro.KPipeline` if the `kokoro` package is installed
 
-```text
-live-video-translator/
-├── main.py                # Entry point
-├── config.py              # Configuration constants
-├── requirements.txt       # Python dependencies
-└── src/
-    ├── audio.py           # System audio loopback recording
-    ├── gui.py             # Tkinter overlay, runtime status, playback state
-    ├── streaming_contracts.py  # Shared streaming and playback contracts
-    ├── transcriber.py     # Whisper streaming decode and commit logic
-    └── tts.py             # Queued TTS scheduler and backend abstraction
-```
+Kokoro currently defaults to:
 
-## 🐛 Troubleshooting
+- voice: `af_heart`
+- sample rate: `24000`
+- device: CPU
 
-*   **"Model not loading":** The first time you select a new model (e.g., `large-v3`), it downloads ~3GB of data. The app may freeze momentarily. Check your console/terminal for download progress.
-*   **"Hallucinations" (Thank you for watching):** The app includes a filter for common Whisper hallucinations. If one sneaks through, the code in `src/transcriber.py` can be updated to add new banned phrases.
-*   **Audio Lag:** The default settings now favor accuracy over speed. If latency is too high, switch to `distil-large-v3` or `small`.
+If `kokoro` is not installed, the backend selector only exposes `system`.
 
-## 🧪 Replay Regression Workflow
+## Local Model Storage
 
-Use `replay_audio.py` to run saved audio through the live transcriber path and export a structured summary:
+Downloaded assets are redirected into the repo under `models/`:
 
-```bash
+- `models/whisper`: Faster-Whisper downloads
+- `models/huggingface`: Hugging Face cache used by Kokoro-related downloads
+- `models/huggingface/hub`
+- `models/huggingface/transformers`
+- `models/kokoro`: Kokoro cache path
+
+This behavior is configured in [config.py](/C:/Users/Calvin/Software%20Projects/OmniBabel/config.py).
+
+## Streaming Contract
+
+The transcriber emits structured `TranslationUpdate` objects instead of raw text strings.
+
+Core invariants from [src/streaming_contracts.py](/C:/Users/Calvin/Software%20Projects/OmniBabel/src/streaming_contracts.py):
+
+- `provisional_text` may change between revisions
+- `committed_text` is append-only
+- `committed_append` is the immutable suffix added at the current `commit_id`
+- TTS jobs are derived from committed output, not provisional output
+- `clause_id` identifies immutable spoken units
+
+The current transcriber behavior in [src/transcriber.py](/C:/Users/Calvin/Software%20Projects/OmniBabel/src/transcriber.py) includes:
+
+- rolling preview confirmation before a preview becomes committed
+- a separate preview decode cadence and preview commit cadence
+- preference for clause-ending punctuation when advancing committed text
+- full utterance flush on finalization
+- filtering for common Whisper hallucination / subtitle metadata patterns
+
+## Runtime Status
+
+The overlay can show two optional status rows:
+
+- runtime state, source/target language, detected language, task, model/device, and ambient calibration state
+- TTS playback state, source, active job id, and queued job count
+
+If `Show Runtime and TTS Status Rows` is disabled, the overlay becomes a captions-only view.
+
+## Replay Workflow
+
+Use [replay_audio.py](/C:/Users/Calvin/Software%20Projects/OmniBabel/replay_audio.py) to feed saved audio through the live transcriber path:
+
+```powershell
 python replay_audio.py .\sample.wav --print-summary
 python replay_audio.py .\sample.wav --summary-json .\summary.json --quiet
 ```
 
-To build a small audio regression corpus, add fixture clips under `tests/fixtures/`, update `tests/replay_manifest.json`, and run:
+To run the manifest-based replay suite:
 
-```bash
-python tests/run_replay_suite.py --manifest tests/replay_manifest.json --keep-summaries
+```powershell
+python tests\run_replay_suite.py --manifest tests\replay_manifest.json --keep-summaries
 ```
 
-Replay summaries now reflect the streaming contract directly:
+Replay summaries include:
 
-* `emitted_text` contains each immutable `committed_append` chunk as it was emitted.
-* `final_committed_text` is the append-only aggregate committed transcript for the clip.
-* `revision_ids`, `commit_ids`, and `clause_ids` let the suite verify monotonic contract behavior.
-* `append_only_valid` flags whether the replay maintained append-only committed growth.
+- emitted committed chunks
+- final committed transcript
+- revision / commit / clause id sequences
+- append-only contract validation
+- runtime config and final runtime status
 
-This is the intended verification path for tuning VAD thresholds, end-of-file flush behavior, preview confirmation behavior, and streaming commit chunking against real clips.
+## Project Layout
 
-## 📥 Predownloading Models
+```text
+OmniBabel/
+├── config.py
+├── main.py
+├── replay_audio.py
+├── requirements.txt
+├── src/
+│   ├── audio.py
+│   ├── dialogs.py
+│   ├── gui.py
+│   ├── settings.py
+│   ├── streaming_contracts.py
+│   ├── transcriber.py
+│   └── tts.py
+└── tests/
+    ├── run_replay_suite.py
+    └── ...
+```
 
-If you want the app ready before the first live run, predownload the supported Whisper models and warm up Kokoro through the project venv. Assets will land under the repo-local `models` tree described above.
+## Troubleshooting
 
-## 📜 License
+- Model load appears slow on first run: initial downloads can be large, especially `large-v3`.
+- CUDA selection falls back to CPU: OmniBabel attempts CPU fallback if GPU model initialization fails.
+- No startup audio capture: confirm loopback capture is available for your current Windows output device.
+- TTS feedback loop: route playback to headphones or a separate output path.
+- Strange subtitle junk such as promo/caption text: the transcriber filters many known patterns, but the phrase list may still need to grow over time.
 
-This project is open-source and available under the [MIT License](LICENSE).
+## License
 
-## 🙏 Acknowledgements
+This project is licensed under the [MIT License](LICENSE.txt).
 
-*   [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) for the incredible inference speed.
-*   [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch) for enabling system audio loopback on Windows.
+## Acknowledgements
+
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+- [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch)

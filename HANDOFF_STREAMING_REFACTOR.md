@@ -1,6 +1,6 @@
 # Streaming Refactor Handoff
 
-This document is the handoff state for the current OmniBabel refactor. It is intended to let another agent continue the work with no thread context.
+This document is the handoff state for the current OmniBabel streaming/TTS refactor. It is intended to let another agent continue the work with no thread context.
 
 ## Goal
 
@@ -49,9 +49,9 @@ Completed:
 11. Strengthen streaming agreement logic with rolling confirmation, separate preview commit cadence, and boundary-aware preview commits
 12. Finish Kokoro runtime integration and expose backend selection in settings
 
-Remaining:
+Open follow-up areas:
 13. Improve the streaming agreement algorithm further if a fuller local-agreement engine is still desired
-14. Continue UX polish and settings documentation as needed
+14. Continue UX polish and documentation as needed
 
 ## Current Architecture
 
@@ -134,6 +134,7 @@ Current behavior:
 - creates `TTSJob`s internally from committed text only
 - enforces append-only commit behavior
 - segments committed deltas into clauses
+- still exposes `speak(text)` as a manual/fallback entrypoint
 - supports interrupt policies:
   - `QUEUE`
   - `INTERRUPT`
@@ -193,7 +194,7 @@ Tests:
 
 ## What Is Verified
 
-Current test suite passes:
+Current test coverage includes:
 
 ```bash
 python -m unittest tests.test_streaming_contracts tests.test_phase1_transcriber tests.test_replay_tooling tests.test_tts_scheduler tests.test_gui_contracts
@@ -221,6 +222,7 @@ Additional current verification performed during follow-up work:
 ```bash
 python -m unittest tests.test_phase1_transcriber tests.test_tts_scheduler tests.test_gui_contracts
 python -m py_compile config.py src\transcriber.py src\tts.py src\gui.py src\settings.py main.py
+python -m unittest tests.test_config_paths
 ```
 
 ## Remaining Recommended Work
@@ -262,11 +264,10 @@ If continuing the refactor, decide whether:
 
 This should be unified later.
 
-### 3. Kokoro runtime is dependency-backed
+### 3. Kokoro runtime is optional and dependency-backed
 
-The environment now has the `kokoro` package installed in the project venv.
-The backend uses `kokoro.KPipeline` and a default `af_heart` voice.
-The repo now supports predownloading runtime assets into the root `models/` tree, and the current environment has already been warmed through that path.
+The backend uses `kokoro.KPipeline` and a default `af_heart` voice when the `kokoro` package is installed.
+The repo supports predownloading runtime assets into the root `models/` tree, but that warmed-cache state is environment-specific and should not be assumed by future agents.
 
 ### 4. Repo-local model storage is now explicit
 
@@ -322,16 +323,19 @@ Run app with correct venv:
 run.bat
 ```
 
-## Current Commit / Working Tree State
+## Current Repo State
 
-Recent committed milestones:
+Do not rely on this handoff for exact commit IDs or working tree state.
+Before continuing work, check the live repository state with:
 
-```text
-2edd59d Refactor streaming translation and queued TTS pipeline
-7d8658d Improve streaming agreement and integrate Kokoro TTS
-36dbed5 Fix startup playback callback initialization
-8d01da3 Polish overlay UX and harden runtime filtering
+```bash
+git status --short
+git log --oneline -5
 ```
 
-Important note:
-- the current working tree also includes follow-up changes after those commits, including `large-v3-turbo` runtime selection, captions-only overlay settings, repo-root `models/` storage, and local model predownload support
+Features that are now part of the current codebase and should be treated as landed include:
+- `large-v3-turbo` runtime selection
+- captions-only overlay status-row toggle
+- repo-root `models/` storage and cache env wiring
+- startup validation for platform, dependencies, FFmpeg, and loopback audio
+- config-path tests for repo-local model cache directories
