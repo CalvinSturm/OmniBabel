@@ -14,6 +14,9 @@
         "monotonic_revision_ids": true,
         "monotonic_commit_ids": true,
         "monotonic_clause_ids": true,
+        "max_transcriber_buffer_seconds_at_most": 12.0,
+        "load_shedding_event_count_at_most": 0,
+        "degraded_event_count_at_most": 0,
         "final_contains_any_text": [
           "lazy dog",
           "over the lazy dog"
@@ -46,6 +49,9 @@
         "monotonic_revision_ids": true,
         "monotonic_commit_ids": true,
         "monotonic_clause_ids": true,
+        "max_transcriber_buffer_seconds_at_most": 12.0,
+        "load_shedding_event_count_at_most": 0,
+        "degraded_event_count_at_most": 0,
         "final_contains_any_text": [
           "timing checks",
           "timing check"
@@ -75,6 +81,9 @@
         "monotonic_revision_ids": true,
         "monotonic_commit_ids": true,
         "monotonic_clause_ids": true,
+        "max_transcriber_buffer_seconds_at_most": 12.0,
+        "load_shedding_event_count_at_most": 0,
+        "degraded_event_count_at_most": 0,
         "final_contains_all_text": [
           "background noise",
           "threshold"
@@ -107,6 +116,9 @@
         "monotonic_revision_ids": true,
         "monotonic_commit_ids": true,
         "monotonic_clause_ids": true,
+        "max_transcriber_buffer_seconds_at_most": 12.0,
+        "load_shedding_event_count_at_most": 0,
+        "degraded_event_count_at_most": 0,
         "final_contains_all_text": [
           "ends on speech"
         ],
@@ -134,6 +146,9 @@
         "monotonic_revision_ids": true,
         "monotonic_commit_ids": true,
         "monotonic_clause_ids": true,
+        "max_transcriber_buffer_seconds_at_most": 12.0,
+        "load_shedding_event_count_at_most": 0,
+        "degraded_event_count_at_most": 0,
         "final_contains_all_text": [
           "background music",
           "spoken sentence"
@@ -166,6 +181,9 @@
         "monotonic_revision_ids": true,
         "monotonic_commit_ids": true,
         "monotonic_clause_ids": true,
+        "max_transcriber_buffer_seconds_at_most": 12.0,
+        "load_shedding_event_count_at_most": 0,
+        "degraded_event_count_at_most": 0,
         "require_status": [
           "speech_detected",
           "processing",
@@ -193,6 +211,9 @@
         "monotonic_revision_ids": true,
         "monotonic_commit_ids": true,
         "monotonic_clause_ids": true,
+        "max_transcriber_buffer_seconds_at_most": 12.0,
+        "load_shedding_event_count_at_most": 0,
+        "degraded_event_count_at_most": 0,
         "final_contains_all_text": [
           "quiet lead in",
           "detected cleanly"

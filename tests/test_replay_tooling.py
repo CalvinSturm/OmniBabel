@@ -36,11 +36,23 @@ class FakeTranscriber:
             "min_utterance_seconds": kwargs.get("initial_min_utterance_seconds", 0.8),
             "max_utterance_seconds": kwargs.get("initial_max_utterance_seconds", 8.0),
             "debug_logging_enabled": kwargs.get("initial_debug_logging_enabled", False),
+            "transcriber_queue_depth": 0,
+            "transcriber_buffer_seconds": 0.0,
+            "dropped_transcription_seconds": 0.0,
+            "overload_events": 0,
+            "capture_to_commit_latency_ms": 42,
+            "load_shedding_active": False,
         }
         self.status = {
             "runtime_state": "listening",
             "message": "Listening for speech",
             "detected_language": "en",
+            "transcriber_queue_depth": 0,
+            "transcriber_buffer_seconds": 0.0,
+            "dropped_transcription_seconds": 0.0,
+            "overload_events": 0,
+            "capture_to_commit_latency_ms": 42,
+            "load_shedding_active": False,
         }
 
     def start(self):
@@ -60,7 +72,14 @@ class FakeTranscriber:
                 audio_start_ms=0,
                 audio_end_ms=500,
             ),
-            {"detected_language": "en", "runtime_state": "listening"},
+            {
+                "detected_language": "en",
+                "runtime_state": "listening",
+                "capture_to_commit_latency_ms": 42,
+                "transcriber_queue_depth": 0,
+                "transcriber_buffer_seconds": 0.25,
+                "load_shedding_active": False,
+            },
         )
         self.status_callback(dict(self.status))
         return True
@@ -109,6 +128,11 @@ class ReplayToolingTests(unittest.TestCase):
         self.assertTrue(summary["flush_completed"])
         self.assertIn("processing", summary["status_sequence"])
         self.assertEqual(summary["runtime_config"]["task"], "translate")
+        self.assertEqual(summary["max_capture_to_commit_latency_ms"], 42)
+        self.assertEqual(summary["final_capture_to_commit_latency_ms"], 42)
+        self.assertEqual(summary["max_transcriber_queue_depth"], 0)
+        self.assertEqual(summary["load_shedding_event_count"], 0)
+        self.assertEqual(summary["degraded_event_count"], 0)
 
     def test_evaluate_case_reports_expectation_failures(self):
         summary = {
@@ -116,6 +140,12 @@ class ReplayToolingTests(unittest.TestCase):
             "emission_count": 1,
             "emitted_text": ["hello world"],
             "status_sequence": ["processing", "listening"],
+            "append_only_valid": False,
+            "max_capture_to_commit_latency_ms": 500,
+            "max_transcriber_queue_depth": 9,
+            "max_transcriber_buffer_seconds": 4.5,
+            "load_shedding_event_count": 2,
+            "degraded_event_count": 1,
         }
         case = {
             "expect": {
@@ -125,16 +155,26 @@ class ReplayToolingTests(unittest.TestCase):
                 "require_status": ["error"],
                 "append_only_valid": True,
                 "monotonic_revision_ids": True,
+                "max_capture_to_commit_latency_ms_at_most": 250,
+                "max_transcriber_queue_depth_at_most": 4,
+                "max_transcriber_buffer_seconds_at_most": 1.0,
+                "load_shedding_event_count_at_most": 0,
+                "degraded_event_count_at_most": 0,
             }
         }
 
         errors = evaluate_case(case, summary)
 
-        self.assertEqual(len(errors), 4)
+        self.assertEqual(len(errors), 9)
         self.assertTrue(any("emission_count>=" in error for error in errors))
         self.assertTrue(any("missing phrase" in error for error in errors))
         self.assertTrue(any("status_sequence" in error for error in errors))
         self.assertTrue(any("append_only_valid" in error for error in errors))
+        self.assertTrue(any("max_capture_to_commit_latency_ms" in error for error in errors))
+        self.assertTrue(any("max_transcriber_queue_depth" in error for error in errors))
+        self.assertTrue(any("max_transcriber_buffer_seconds" in error for error in errors))
+        self.assertTrue(any("load_shedding_event_count" in error for error in errors))
+        self.assertTrue(any("degraded_event_count" in error for error in errors))
 
 
 if __name__ == "__main__":

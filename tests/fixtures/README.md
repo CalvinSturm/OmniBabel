@@ -25,3 +25,13 @@ venv\Scripts\python.exe tests/run_replay_suite.py --manifest tests/replay_manife
 ```
 
 Each case writes a structured summary JSON file under `tests/replay-output/` when `--keep-summaries` is set.
+
+Replay summaries now also include operational metrics used for overload validation:
+- `max_capture_to_commit_latency_ms`
+- `final_capture_to_commit_latency_ms`
+- `max_transcriber_queue_depth`
+- `max_transcriber_buffer_seconds`
+- `load_shedding_event_count`
+- `degraded_event_count`
+
+The current fixture manifest treats load shedding and degraded-state events as regressions for the shipped offline fixtures, and it expects transcriber buffering to remain within the configured cap.

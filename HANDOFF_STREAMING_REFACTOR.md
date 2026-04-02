@@ -165,10 +165,25 @@ File:
 
 Current behavior:
 - consumes `TranslationUpdate` from transcriber
-- forwards update to GUI
-- forwards update to TTS scheduler
+- can forward updates through an optional ordered GGUF post-processing worker first
+- forwards the final update to GUI
+- forwards the final update to TTS scheduler
 - playback state comes from TTS callback, not hand-built UI logic
 - settings now persist whether the overlay shows the runtime/playback rows
+- settings now persist optional GGUF post-processing fields for a local `llama.cpp` CLI + GGUF model path
+
+### GGUF post-processing
+
+File:
+- `src/postprocessing.py`
+
+Current behavior:
+- optional pass between transcriber output and GUI/TTS consumption
+- only rewrites `committed_append`, never provisional-only text
+- preserves append-only output ordering by processing updates on a dedicated worker thread
+- uses a local `llama.cpp`-style CLI such as `llama-cli`, not a Python GGUF runtime dependency
+- applies a conservative subtitle-cleanup prompt and rejects obviously unsafe/bloated rewrites
+- falls back to passthrough if the executable/model path is missing or the CLI call fails
 
 ## Files Changed in This Refactor
 

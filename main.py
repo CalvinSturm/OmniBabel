@@ -13,12 +13,16 @@ from config import (
     DEFAULT_MAX_UTTERANCE_SECONDS,
     DEFAULT_MIN_UTTERANCE_SECONDS,
     DEFAULT_MODEL_SIZE,
+    DEFAULT_POSTPROCESS_ENABLED,
+    DEFAULT_POSTPROCESS_EXECUTABLE,
+    DEFAULT_POSTPROCESS_MODEL_PATH,
     DEFAULT_SOURCE_LANGUAGE,
     DEFAULT_TARGET_LANGUAGE,
     DEFAULT_TASK,
     DEFAULT_UTTERANCE_END_SILENCE_SECONDS,
     DEFAULT_VAD_ENERGY_THRESHOLD,
     LANGUAGE_CHOICES,
+    TRANSCRIBER_INPUT_QUEUE_MAX_BLOCKS,
 )
 
 
@@ -81,11 +85,12 @@ def run_startup_checks():
 
 def load_components():
     from src.audio import AudioRecorder
+    from src.postprocessing import PostProcessingHandle
     from src.transcriber import Transcriber
     from src.gui import OverlayGUI
     from src.tts import TTSHandle
 
-    return AudioRecorder, Transcriber, OverlayGUI, TTSHandle
+    return AudioRecorder, Transcriber, OverlayGUI, TTSHandle, PostProcessingHandle
 
 
 def normalize_settings(settings):
@@ -106,6 +111,9 @@ def normalize_settings(settings):
     max_utterance_seconds = normalized.get("max_utterance_seconds", DEFAULT_MAX_UTTERANCE_SECONDS)
     debug_logging_enabled = normalized.get("debug_logging_enabled", DEFAULT_DEBUG_LOGGING)
     tts_backend = normalized.get("tts_backend", "system")
+    postprocess_enabled = normalized.get("postprocess_enabled", DEFAULT_POSTPROCESS_ENABLED)
+    postprocess_executable_path = normalized.get("postprocess_executable_path", DEFAULT_POSTPROCESS_EXECUTABLE)
+    postprocess_model_path = normalized.get("postprocess_model_path", DEFAULT_POSTPROCESS_MODEL_PATH)
 
     if model_size not in AVAILABLE_MODELS:
         replacement_model = DEFAULT_MODEL_SIZE
@@ -179,6 +187,20 @@ def normalize_settings(settings):
     else:
         normalized["tts_backend"] = tts_backend
 
+    normalized["postprocess_enabled"] = bool(postprocess_enabled)
+    if not isinstance(postprocess_executable_path, str) or not postprocess_executable_path.strip():
+        warnings.append("Saved GGUF executable path is invalid. Using 'llama-cli' instead.")
+        normalized["postprocess_executable_path"] = DEFAULT_POSTPROCESS_EXECUTABLE
+    else:
+        normalized["postprocess_executable_path"] = postprocess_executable_path.strip()
+
+    if not isinstance(postprocess_model_path, str):
+        warnings.append("Saved GGUF model path is invalid. Disabling GGUF post-processing.")
+        normalized["postprocess_model_path"] = DEFAULT_POSTPROCESS_MODEL_PATH
+        normalized["postprocess_enabled"] = False
+    else:
+        normalized["postprocess_model_path"] = postprocess_model_path.strip()
+
     return normalized, warnings
 
 
@@ -192,19 +214,28 @@ def main():
         show_dialog("OmniBabel Startup Error", "\n\n".join(issues), level="error")
         raise SystemExit(1)
 
-    AudioRecorder, Transcriber, OverlayGUI, TTSHandle = load_components()
+    AudioRecorder, Transcriber, OverlayGUI, TTSHandle, PostProcessingHandle = load_components()
     settings = load_settings()
     settings, normalization_warnings = normalize_settings(settings)
     if normalization_warnings:
         save_settings(settings)
-    audio_queue = queue.Queue()
+    audio_queue = queue.Queue(maxsize=TRANSCRIBER_INPUT_QUEUE_MAX_BLOCKS)
     gui = None
+    latest_runtime_status = {}
+    postprocessor = None
+
+    def publish_runtime_status(update):
+        latest_runtime_status.update(update)
+        if gui is not None:
+            gui.schedule_runtime_status_update(dict(latest_runtime_status))
 
     def on_tts_playback_state(state):
+        publish_runtime_status(tts_engine.get_telemetry())
         if gui is not None:
             gui.schedule_playback_state_update(state)
 
     tts_engine = TTSHandle(state_callback=on_tts_playback_state)
+    postprocessor = PostProcessingHandle(update_callback=lambda update, status: None)
     shutting_down = False
     pending_status = None
 
@@ -220,20 +251,29 @@ def main():
         tts_engine.set_voice(settings["voice_id"])
 
     def on_translation_received(update, status):
+        postprocessor.submit_translation_update(update, status)
+
+    def on_postprocessed_translation_received(update, status):
         text = update.committed_append.strip()
         if gui is not None:
             gui.schedule_translation_update(update)
-            gui.schedule_runtime_status_update(status)
+        publish_runtime_status(status)
         should_notify_tts = bool(text) or bool(update.clause and update.clause.is_final_clause)
         if not should_notify_tts:
             return
         tts_engine.submit_translation_update(update)
 
+    postprocessor.update_callback = on_postprocessed_translation_received
+    postprocessor.start()
+    publish_runtime_status(postprocessor.get_runtime_status())
+
     def on_transcriber_status(status):
         nonlocal pending_status
         pending_status = status
-        if gui is not None:
-            gui.schedule_runtime_status_update(status)
+        publish_runtime_status(status)
+
+    def on_recorder_stats(stats):
+        publish_runtime_status(stats)
 
     def toggle_tts_enabled(is_enabled):
         tts_engine.enabled = is_enabled
@@ -271,13 +311,25 @@ def main():
             "voice_id": selected_voice_id,
         }
 
+    def change_postprocess_settings(enabled, executable_path, model_path):
+        result = postprocessor.configure(enabled, executable_path=executable_path, model_path=model_path)
+        persist_settings(
+            {
+                "postprocess_enabled": result["postprocess_enabled"],
+                "postprocess_executable_path": result["postprocess_executable_path"],
+                "postprocess_model_path": result["postprocess_model_path"],
+            }
+        )
+        publish_runtime_status(postprocessor.get_runtime_status())
+        return result
+
     def get_available_voices():
         return tts_engine.get_voices()
 
     def get_available_tts_backends():
         return tts_engine.get_available_backends()
 
-    recorder = AudioRecorder(audio_queue)
+    recorder = AudioRecorder(audio_queue, stats_callback=on_recorder_stats)
     try:
         transcriber = Transcriber(
             audio_queue,
@@ -359,6 +411,7 @@ def main():
             recorder.stop()
             transcriber.stop()
             tts_engine.stop()
+            postprocessor.stop()
         finally:
             gui.stop()
 
@@ -371,6 +424,7 @@ def main():
         get_voices_callback=get_available_voices,
         get_tts_backends_callback=get_available_tts_backends,
         model_change_callback=change_ai_model,
+        postprocess_settings_callback=change_postprocess_settings,
         translation_settings_callback=change_translation_settings,
         initial_settings=settings,
         settings_change_callback=persist_settings,
@@ -383,6 +437,12 @@ def main():
         gui.show_dialog("Startup Warning", initial_load_message, level="warning")
     elif normalization_warnings:
         gui.show_dialog("Startup Warning", "\n\n".join(normalization_warnings), level="warning")
+
+    change_postprocess_settings(
+        settings["postprocess_enabled"],
+        settings["postprocess_executable_path"],
+        settings["postprocess_model_path"],
+    )
 
     recorder.start()
     transcriber.start()

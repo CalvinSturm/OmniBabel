@@ -1,8 +1,10 @@
 import sys
 import types
 import unittest
+import queue
 from unittest import mock
 from types import SimpleNamespace
+from collections import deque
 
 import numpy as np
 
@@ -28,6 +30,8 @@ class TranscriberPhase1Tests(unittest.TestCase):
         transcriber.user_source_language = "auto"
         transcriber.target_language = "en"
         transcriber.task = "translate"
+        transcriber.active_model_size = "large-v3"
+        transcriber.active_device = "cpu"
         transcriber.detected_language = None
         transcriber.detected_language_votes = []
         transcriber.vad_energy_threshold = 0.012
@@ -52,6 +56,11 @@ class TranscriberPhase1Tests(unittest.TestCase):
         transcriber.filtered_log_times = {}
         transcriber.model_lock = DummyLock()
         transcriber.model = object()
+        transcriber.audio_queue = queue.Queue()
+        transcriber.dropped_transcription_seconds = 0.0
+        transcriber.overload_events = 0
+        transcriber.capture_to_commit_latency_ms = None
+        transcriber.load_shedding_active = False
         transcriber.status = {}
         transcriber.status_updates = []
         transcriber.status_callback = lambda payload: transcriber.status_updates.append(payload)
@@ -94,7 +103,9 @@ class TranscriberPhase1Tests(unittest.TestCase):
     def test_flush_processes_final_speech_without_trailing_silence(self):
         transcriber = self.make_transcriber()
         transcriber._process_audio_chunk = (
-            lambda chunk, start, is_final=False: transcriber.result_events.append((len(chunk), start, is_final))
+            lambda chunk, start, is_final=False, capture_started_at_ms=None: transcriber.result_events.append(
+                (len(chunk), start, is_final)
+            )
         )
 
         frame_samples = int(TARGET_RATE * VAD_FRAME_SECONDS)
@@ -372,6 +383,49 @@ class TranscriberPhase1Tests(unittest.TestCase):
             compute_type="float32",
             download_root=str(WHISPER_MODEL_CACHE_DIR),
         )
+
+    def test_cap_audio_buffer_drops_stale_backlog(self):
+        transcriber = self.make_transcriber()
+        transcriber._debug_log = lambda *args, **kwargs: None
+        transcriber._emit_status = mock.Mock()
+
+        oversized = np.zeros(int(TARGET_RATE * 15), dtype=np.float32)
+
+        trimmed, next_start = transcriber._cap_audio_buffer(oversized, 800)
+
+        self.assertEqual(len(trimmed), int(TARGET_RATE * 12.0))
+        self.assertEqual(next_start, 800 + int(TARGET_RATE * 3.0))
+        self.assertGreater(transcriber.dropped_transcription_seconds, 0.0)
+        self.assertEqual(transcriber.overload_events, 1)
+        self.assertTrue(transcriber.load_shedding_active)
+        transcriber._emit_status.assert_called()
+
+    def test_emit_status_clears_load_shedding_flag_after_recovery(self):
+        transcriber = self.make_transcriber()
+        transcriber.status = {"load_shedding_active": True}
+
+        Transcriber._emit_status(transcriber, runtime_state="listening", message="Listening for speech")
+
+        self.assertFalse(transcriber.status_updates[-1]["load_shedding_active"])
+
+    def test_buffer_metadata_tracks_oldest_capture_timestamp(self):
+        transcriber = self.make_transcriber()
+        metadata = deque()
+
+        transcriber._append_buffer_metadata(metadata, 1000, 111)
+        transcriber._append_buffer_metadata(metadata, 2000, 222)
+        started_at_ms = transcriber._consume_buffer_metadata(metadata, 1500)
+
+        self.assertEqual(started_at_ms, 111)
+        self.assertEqual(metadata[0][1], 222)
+
+    def test_normalize_audio_item_accepts_timestamped_queue_payload(self):
+        transcriber = self.make_transcriber()
+
+        audio, captured_at_ms = transcriber._normalize_audio_item((np.ones(4, dtype=np.float32), 321))
+
+        self.assertEqual(captured_at_ms, 321)
+        self.assertEqual(len(audio), 4)
 
 
 if __name__ == "__main__":

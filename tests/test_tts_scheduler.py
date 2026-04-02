@@ -42,6 +42,10 @@ class TTSSchedulerTests(unittest.TestCase):
         handle.pending_clause_text = ""
         handle.next_job_id = 1
         handle.next_clause_id = 1
+        handle.dropped_jobs = 0
+        handle.overload_events = 0
+        handle.capture_to_playback_latency_ms = None
+        handle.load_shedding_active = False
         handle.submit_job_calls = []
         handle.state_events = []
         handle.synthesis_queue = queue.Queue()
@@ -180,6 +184,21 @@ class TTSSchedulerTests(unittest.TestCase):
 
         self.assertIn("system", available)
 
+    def test_get_telemetry_reports_queue_and_drop_fields(self):
+        handle = self.make_handle()
+        handle.dropped_jobs = 3
+        handle.overload_events = 2
+        handle.capture_to_playback_latency_ms = 450
+        handle.synthesis_queue.put("pending")
+
+        telemetry = TTSHandle.get_telemetry(handle)
+
+        self.assertEqual(telemetry["tts_synthesis_queue_depth"], 1)
+        self.assertEqual(telemetry["tts_dropped_jobs"], 3)
+        self.assertEqual(telemetry["tts_overload_events"], 2)
+        self.assertEqual(telemetry["capture_to_playback_latency_ms"], 450)
+        self.assertFalse(telemetry["tts_load_shedding_active"])
+
     def test_build_system_backend_returns_pyttsx3_backend(self):
         handle = self.make_handle()
 
@@ -240,6 +259,31 @@ class TTSSchedulerTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             TTSHandle._build_backend(handle, "missing-backend")
+
+    def test_submit_job_drops_stale_pending_work_when_backlog_is_too_large(self):
+        handle = self.make_handle()
+        handle.synthesis_queue = queue.Queue(maxsize=8)
+        handle.playback_queue = queue.Queue(maxsize=8)
+        for index in range(8):
+            handle.synthesis_queue.put(f"job-{index}")
+        for index in range(2):
+            handle.playback_queue.put(f"play-{index}")
+        job = TTSJob(
+            job_id=99,
+            commit_id=5,
+            clause_id=5,
+            text="fresh clause",
+            source=TTSJobSource.COMMITTED_TRANSLATION,
+            interrupt_policy=InterruptPolicy.QUEUE,
+        )
+
+        TTSHandle.submit_job(handle, job)
+
+        self.assertEqual(handle.overload_events, 1)
+        self.assertEqual(handle.dropped_jobs, 10)
+        self.assertTrue(handle.load_shedding_active)
+        self.assertEqual(handle.synthesis_queue.qsize(), 1)
+        self.assertFalse(any(state.status == PlaybackStatus.CANCELLED for state in handle.state_events))
 
 
 if __name__ == "__main__":

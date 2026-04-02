@@ -95,7 +95,8 @@ def run_replay(args):
     try:
         for start in range(0, len(audio), block_samples):
             block = audio[start:start + block_samples]
-            audio_queue.put(block)
+            captured_at_ms = int(time.time() * 1000)
+            audio_queue.put((block, captured_at_ms))
             if args.realtime:
                 time.sleep(len(block) / sample_rate)
 
@@ -138,6 +139,24 @@ def run_replay(args):
         if clause_id is not None:
             last_clause_id = clause_id
 
+    capture_to_commit_latencies = [
+        int(event["status"]["capture_to_commit_latency_ms"])
+        for event in emitted_events
+        if event["status"].get("capture_to_commit_latency_ms") is not None
+    ]
+    transcriber_queue_depths = [
+        int(event["status"].get("transcriber_queue_depth", 0) or 0)
+        for event in status_events
+    ]
+    transcriber_buffer_seconds = [
+        float(event["status"].get("transcriber_buffer_seconds", 0.0) or 0.0)
+        for event in status_events
+    ]
+    load_shedding_events = sum(
+        1 for event in status_events if bool(event["status"].get("load_shedding_active", False))
+    )
+    degraded_events = sum(1 for event in status_events if event["runtime_state"] == "degraded")
+
     summary = {
         "input": str(args.input),
         "sample_rate": sample_rate,
@@ -155,6 +174,16 @@ def run_replay(args):
         "final_committed_text": final_committed_text,
         "append_only_valid": append_only_valid,
         "status_sequence": [event["runtime_state"] for event in status_events],
+        "max_capture_to_commit_latency_ms": max(capture_to_commit_latencies) if capture_to_commit_latencies else None,
+        "final_capture_to_commit_latency_ms": (
+            capture_to_commit_latencies[-1] if capture_to_commit_latencies else None
+        ),
+        "max_transcriber_queue_depth": max(transcriber_queue_depths) if transcriber_queue_depths else 0,
+        "max_transcriber_buffer_seconds": (
+            round(max(transcriber_buffer_seconds), 3) if transcriber_buffer_seconds else 0.0
+        ),
+        "load_shedding_event_count": load_shedding_events,
+        "degraded_event_count": degraded_events,
         "runtime_config": runtime_config,
         "final_status": final_status,
     }

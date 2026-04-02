@@ -16,6 +16,7 @@ import sounddevice as sd
 import soundfile as sf
 
 from config import ensure_local_model_cache_dirs
+from config import TTS_MAX_PENDING_JOBS, TTS_PLAYBACK_QUEUE_MAX_JOBS, TTS_SYNTHESIS_QUEUE_MAX_JOBS
 from src.streaming_contracts import (
     InterruptPolicy,
     PlaybackState,
@@ -156,8 +157,8 @@ class KokoroBackend(TTSBackend):
 
 class TTSHandle:
     def __init__(self, state_callback=None):
-        self.synthesis_queue = queue.Queue()
-        self.playback_queue = queue.Queue()
+        self.synthesis_queue = queue.Queue(maxsize=TTS_SYNTHESIS_QUEUE_MAX_JOBS)
+        self.playback_queue = queue.Queue(maxsize=TTS_PLAYBACK_QUEUE_MAX_JOBS)
         self.running = True
         self.enabled = False
         self.output_device_index = None
@@ -171,6 +172,10 @@ class TTSHandle:
         self.pending_clause_text = ""
         self.next_job_id = 1
         self.next_clause_id = 1
+        self.dropped_jobs = 0
+        self.overload_events = 0
+        self.capture_to_playback_latency_ms = None
+        self.load_shedding_active = False
 
         self.synthesis_thread = threading.Thread(target=self._synthesis_worker, daemon=True)
         self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
@@ -186,6 +191,16 @@ class TTSHandle:
         if importlib.util.find_spec("kokoro") is not None:
             backends.append("kokoro")
         return backends
+
+    def get_telemetry(self):
+        return {
+            "tts_synthesis_queue_depth": self.synthesis_queue.qsize(),
+            "tts_playback_queue_depth": self.playback_queue.qsize(),
+            "tts_dropped_jobs": self.dropped_jobs,
+            "tts_overload_events": self.overload_events,
+            "capture_to_playback_latency_ms": self.capture_to_playback_latency_ms,
+            "tts_load_shedding_active": self.load_shedding_active,
+        }
 
     def set_backend(self, backend_name):
         if backend_name == self.backend_name:
@@ -214,7 +229,17 @@ class TTSHandle:
             self.flush_queues(cancel_current=True)
         elif job.interrupt_policy == InterruptPolicy.INTERRUPT:
             self.cancel_current()
-        self.synthesis_queue.put(job)
+        if self.synthesis_queue.qsize() + self.playback_queue.qsize() >= TTS_MAX_PENDING_JOBS:
+            self.overload_events += 1
+            self.load_shedding_active = True
+            self.dropped_jobs += self._drop_pending_work(cancel_current=False, emit_idle=False)
+        try:
+            self.synthesis_queue.put_nowait(job)
+        except queue.Full:
+            self.overload_events += 1
+            self.load_shedding_active = True
+            self.dropped_jobs += self._drop_pending_work(cancel_current=False, emit_idle=False)
+            self.synthesis_queue.put(job)
         self._emit_state(PlaybackStatus.QUEUED, active_job_id=job.job_id, source=job.source)
 
     def submit_translation_update(self, update):
@@ -297,6 +322,8 @@ class TTSHandle:
         return clauses, remainder
 
     def _emit_state(self, status, active_job_id, source):
+        if status == PlaybackStatus.IDLE:
+            self.load_shedding_active = False
         with self.state_lock:
             state = PlaybackState(
                 status=status,
@@ -307,6 +334,7 @@ class TTSHandle:
         self.state_callback(state)
 
     def _clear_queue(self, target_queue):
+        cleared = 0
         while True:
             try:
                 item = target_queue.get_nowait()
@@ -315,10 +343,12 @@ class TTSHandle:
             if item is None:
                 target_queue.put(None)
                 break
+            cleared += 1
+        return cleared
 
-    def flush_queues(self, cancel_current=False):
-        self._clear_queue(self.synthesis_queue)
-        self._clear_queue(self.playback_queue)
+    def _drop_pending_work(self, cancel_current=False, emit_idle=True):
+        cleared = self._clear_queue(self.synthesis_queue)
+        cleared += self._clear_queue(self.playback_queue)
         self.pending_clause_text = ""
         if cancel_current:
             try:
@@ -326,7 +356,12 @@ class TTSHandle:
             except Exception:
                 pass
             self._emit_state(PlaybackStatus.CANCELLED, active_job_id=None, source=None)
-        self._emit_state(PlaybackStatus.IDLE, active_job_id=None, source=None)
+        if emit_idle:
+            self._emit_state(PlaybackStatus.IDLE, active_job_id=None, source=None)
+        return cleared
+
+    def flush_queues(self, cancel_current=False):
+        self._drop_pending_work(cancel_current=cancel_current, emit_idle=True)
 
     def cancel_current(self):
         try:
@@ -357,7 +392,13 @@ class TTSHandle:
             try:
                 self._emit_state(PlaybackStatus.SYNTHESIZING, active_job_id=job.job_id, source=job.source)
                 data, sample_rate = self.backend.synthesize(job.text, voice_id=self.voice_id)
-                self.playback_queue.put((job, data, sample_rate))
+                try:
+                    self.playback_queue.put_nowait((job, data, sample_rate))
+                except queue.Full:
+                    self.overload_events += 1
+                    self.load_shedding_active = True
+                    self.dropped_jobs += self._drop_pending_work(cancel_current=False, emit_idle=False)
+                    self.playback_queue.put((job, data, sample_rate))
                 self._emit_state(PlaybackStatus.QUEUED, active_job_id=job.job_id, source=job.source)
             except Exception as exc:
                 print(f"[TTS] Synthesis Error: {exc}")
@@ -384,6 +425,7 @@ class TTSHandle:
 
             try:
                 self._emit_state(PlaybackStatus.PLAYING, active_job_id=job.job_id, source=job.source)
+                self.capture_to_playback_latency_ms = max(int(time.time() * 1000) - job.created_at_ms, 0)
                 sd.play(data, sample_rate, device=self.output_device_index, blocking=True)
                 next_status = PlaybackStatus.IDLE if self.synthesis_queue.empty() and self.playback_queue.empty() else PlaybackStatus.QUEUED
                 next_active = None if next_status == PlaybackStatus.IDLE else job.job_id
@@ -400,8 +442,9 @@ class TTSHandle:
             sd.stop()
         except Exception:
             pass
-        self.synthesis_queue.put(None)
-        self.playback_queue.put(None)
+        self._drop_pending_work(cancel_current=False, emit_idle=False)
+        self.synthesis_queue.put_nowait(None)
+        self.playback_queue.put_nowait(None)
         if self.synthesis_thread:
             self.synthesis_thread.join(timeout=5)
         if self.playback_thread:

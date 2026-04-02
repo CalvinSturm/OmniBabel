@@ -67,6 +67,22 @@ def evaluate_case(case, summary):
             f"expected emission_count<={expected['max_emission_count']}, got {summary.get('emission_count')}"
         )
 
+    bounded_summary_fields = {
+        "max_capture_to_commit_latency_ms_at_most": "max_capture_to_commit_latency_ms",
+        "max_transcriber_queue_depth_at_most": "max_transcriber_queue_depth",
+        "max_transcriber_buffer_seconds_at_most": "max_transcriber_buffer_seconds",
+        "load_shedding_event_count_at_most": "load_shedding_event_count",
+        "degraded_event_count_at_most": "degraded_event_count",
+    }
+    for expected_key, summary_key in bounded_summary_fields.items():
+        if expected_key not in expected:
+            continue
+        actual_value = summary.get(summary_key)
+        if actual_value is None or actual_value > expected[expected_key]:
+            errors.append(
+                f"expected {summary_key}<={expected[expected_key]}, got {actual_value}"
+            )
+
     if "emitted_text_exact" in expected and summary.get("emitted_text") != expected["emitted_text_exact"]:
         errors.append(
             f"expected emitted_text={expected['emitted_text_exact']}, got {summary.get('emitted_text')}"

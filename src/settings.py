@@ -9,6 +9,9 @@ from config import (
     DEFAULT_MIN_UTTERANCE_SECONDS,
     DEFAULT_MODEL_SIZE,
     DEFAULT_OPACITY,
+    DEFAULT_POSTPROCESS_ENABLED,
+    DEFAULT_POSTPROCESS_EXECUTABLE,
+    DEFAULT_POSTPROCESS_MODEL_PATH,
     DEFAULT_SOURCE_LANGUAGE,
     DEFAULT_TARGET_LANGUAGE,
     DEFAULT_TASK,
@@ -37,6 +40,9 @@ DEFAULT_SETTINGS = {
     "tts_backend": "system",
     "voice_id": None,
     "output_device_index": None,
+    "postprocess_enabled": DEFAULT_POSTPROCESS_ENABLED,
+    "postprocess_executable_path": DEFAULT_POSTPROCESS_EXECUTABLE,
+    "postprocess_model_path": DEFAULT_POSTPROCESS_MODEL_PATH,
 }
 
 

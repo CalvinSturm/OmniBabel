@@ -17,6 +17,9 @@ from config import (
     DEFAULT_MODEL_SIZE,
     DEFAULT_MIN_UTTERANCE_SECONDS,
     DEFAULT_OPACITY,
+    DEFAULT_POSTPROCESS_ENABLED,
+    DEFAULT_POSTPROCESS_EXECUTABLE,
+    DEFAULT_POSTPROCESS_MODEL_PATH,
     DEFAULT_SOURCE_LANGUAGE,
     DEFAULT_TARGET_LANGUAGE,
     DEFAULT_TASK,
@@ -57,6 +60,7 @@ class OverlayGUI:
         get_voices_callback,
         get_tts_backends_callback,
         model_change_callback,
+        postprocess_settings_callback,
         translation_settings_callback,
         initial_settings,
         settings_change_callback,
@@ -69,6 +73,7 @@ class OverlayGUI:
         self.get_voices_callback = get_voices_callback
         self.get_tts_backends_callback = get_tts_backends_callback
         self.model_change_callback = model_change_callback
+        self.postprocess_settings_callback = postprocess_settings_callback
         self.translation_settings_callback = translation_settings_callback
         self.settings_change_callback = settings_change_callback
 
@@ -99,6 +104,11 @@ class OverlayGUI:
             "max_utterance_seconds", DEFAULT_MAX_UTTERANCE_SECONDS
         )
         self.debug_logging_enabled = initial_settings.get("debug_logging_enabled", DEFAULT_DEBUG_LOGGING)
+        self.postprocess_enabled = initial_settings.get("postprocess_enabled", DEFAULT_POSTPROCESS_ENABLED)
+        self.postprocess_executable_path = initial_settings.get(
+            "postprocess_executable_path", DEFAULT_POSTPROCESS_EXECUTABLE
+        )
+        self.postprocess_model_path = initial_settings.get("postprocess_model_path", DEFAULT_POSTPROCESS_MODEL_PATH)
         self.is_loading_model = False
         self.runtime_status = {
             "runtime_state": "starting",
@@ -116,6 +126,22 @@ class OverlayGUI:
             "max_utterance_seconds": self.current_max_utterance_seconds,
             "noise_floor": 0.0,
             "ambient_calibrated": False,
+            "capture_queue_depth": 0,
+            "transcriber_queue_depth": 0,
+            "transcriber_buffer_seconds": 0.0,
+            "dropped_raw_audio_blocks": 0,
+            "dropped_transcriber_blocks": 0,
+            "dropped_transcription_seconds": 0.0,
+            "overload_events": 0,
+            "tts_dropped_jobs": 0,
+            "capture_to_commit_latency_ms": None,
+            "capture_to_playback_latency_ms": None,
+            "load_shedding_active": False,
+            "tts_load_shedding_active": False,
+            "postprocess_enabled": self.postprocess_enabled,
+            "postprocess_backend": "llama_cpp_cli" if self.postprocess_enabled else "none",
+            "postprocess_state": "disabled" if not self.postprocess_enabled else "starting",
+            "postprocess_message": "",
         }
         self.committed_text = ""
         self.provisional_text = ""
@@ -277,11 +303,63 @@ class OverlayGUI:
         noise_floor = float(self.runtime_status.get("noise_floor", 0.0) or 0.0)
         ambient_calibrated = bool(self.runtime_status.get("ambient_calibrated", False))
         ambient_label = "Calibrated" if ambient_calibrated else "Calibrating"
-        return (
+        base = (
             f"{runtime_state} | {source_label} -> {target_label} | "
             f"Detected: {detected_label} | {task_label} | {model} ({device}) | "
             f"{ambient_label} {noise_floor:.4f}"
         )
+        capture_queue_depth = int(self.runtime_status.get("capture_queue_depth", 0) or 0)
+        transcriber_queue_depth = int(self.runtime_status.get("transcriber_queue_depth", 0) or 0)
+        transcriber_buffer_seconds = float(self.runtime_status.get("transcriber_buffer_seconds", 0.0) or 0.0)
+        dropped_raw_audio_blocks = int(self.runtime_status.get("dropped_raw_audio_blocks", 0) or 0)
+        dropped_transcriber_blocks = int(self.runtime_status.get("dropped_transcriber_blocks", 0) or 0)
+        dropped_transcription_seconds = float(self.runtime_status.get("dropped_transcription_seconds", 0.0) or 0.0)
+        overload_events = int(self.runtime_status.get("overload_events", 0) or 0)
+        tts_dropped_jobs = int(self.runtime_status.get("tts_dropped_jobs", 0) or 0)
+        capture_to_commit_latency_ms = self.runtime_status.get("capture_to_commit_latency_ms")
+        capture_to_playback_latency_ms = self.runtime_status.get("capture_to_playback_latency_ms")
+        load_shedding_active = bool(self.runtime_status.get("load_shedding_active", False))
+        tts_load_shedding_active = bool(self.runtime_status.get("tts_load_shedding_active", False))
+        postprocess_enabled = bool(self.runtime_status.get("postprocess_enabled", False))
+        postprocess_state = self.runtime_status.get("postprocess_state", "disabled")
+        postprocess_label = "GGUF off"
+        if postprocess_enabled:
+            postprocess_label = f"GGUF {postprocess_state}"
+
+        if any(
+            (
+                capture_queue_depth,
+                transcriber_queue_depth,
+                transcriber_buffer_seconds > 0.5,
+                dropped_raw_audio_blocks,
+                dropped_transcriber_blocks,
+                dropped_transcription_seconds > 0,
+                overload_events,
+                tts_dropped_jobs,
+                capture_to_commit_latency_ms is not None,
+                capture_to_playback_latency_ms is not None,
+                load_shedding_active,
+                tts_load_shedding_active,
+            )
+        ):
+            base = (
+                f"{base} | Q c:{capture_queue_depth} t:{transcriber_queue_depth} "
+                f"buf:{transcriber_buffer_seconds:.1f}s | "
+                f"Drop c:{dropped_raw_audio_blocks + dropped_transcriber_blocks} "
+                f"tx:{dropped_transcription_seconds:.1f}s tts:{tts_dropped_jobs}"
+            )
+            if capture_to_commit_latency_ms is not None or capture_to_playback_latency_ms is not None:
+                commit_label = "-" if capture_to_commit_latency_ms is None else f"{int(capture_to_commit_latency_ms)}ms"
+                playback_label = "-" if capture_to_playback_latency_ms is None else f"{int(capture_to_playback_latency_ms)}ms"
+                base = f"{base} | Lat commit:{commit_label} play:{playback_label}"
+            if load_shedding_active or tts_load_shedding_active:
+                labels = []
+                if load_shedding_active:
+                    labels.append("tx")
+                if tts_load_shedding_active:
+                    labels.append("tts")
+                base = f"{base} | Shed:{'/'.join(labels)}"
+        return f"{base} | Post: {postprocess_label}"
 
     def _format_playback_status(self):
         state = self.playback_state.status.value.replace("_", " ").title()
@@ -402,6 +480,9 @@ class OverlayGUI:
                 "tts_backend": self.selected_tts_backend,
                 "voice_id": self.selected_voice_id,
                 "output_device_index": self.selected_device_index,
+                "postprocess_enabled": self.postprocess_enabled,
+                "postprocess_executable_path": self.postprocess_executable_path,
+                "postprocess_model_path": self.postprocess_model_path,
             }
         )
 
@@ -616,6 +697,24 @@ class OverlayGUI:
         debug_var = tk.BooleanVar(value=self.debug_logging_enabled)
         tk.Checkbutton(panel, text="Enable Debug Logging", variable=debug_var).pack(pady=(4, 6))
 
+        tk.Label(panel, text="GGUF Post-Processing", font=("Arial", 12, "bold")).pack(pady=(8, 4))
+        postprocess_enabled_var = tk.BooleanVar(value=self.postprocess_enabled)
+        tk.Checkbutton(
+            panel,
+            text="Enable committed-text cleanup with a local GGUF model",
+            variable=postprocess_enabled_var,
+        ).pack(pady=(2, 4))
+
+        tk.Label(panel, text="llama.cpp Executable").pack()
+        postprocess_executable_var = tk.StringVar(value=self.postprocess_executable_path)
+        postprocess_executable_entry = tk.Entry(panel, textvariable=postprocess_executable_var, width=48)
+        postprocess_executable_entry.pack(pady=2, padx=20, fill="x")
+
+        tk.Label(panel, text="GGUF Model Path").pack()
+        postprocess_model_var = tk.StringVar(value=self.postprocess_model_path)
+        postprocess_model_entry = tk.Entry(panel, textvariable=postprocess_model_var, width=48)
+        postprocess_model_entry.pack(pady=(2, 6), padx=20, fill="x")
+
         def apply_ai_settings():
             if self.is_loading_model:
                 return
@@ -629,6 +728,9 @@ class OverlayGUI:
             min_utterance_seconds = float(min_utterance_slider.get())
             max_utterance_seconds = float(max_utterance_slider.get())
             debug_logging_enabled = bool(debug_var.get())
+            postprocess_enabled = bool(postprocess_enabled_var.get())
+            postprocess_executable_path = postprocess_executable_var.get().strip()
+            postprocess_model_path = postprocess_model_var.get().strip()
 
             if (
                 model_size == self.current_model
@@ -640,6 +742,9 @@ class OverlayGUI:
                 and min_utterance_seconds == self.current_min_utterance_seconds
                 and max_utterance_seconds == self.current_max_utterance_seconds
                 and debug_logging_enabled == self.debug_logging_enabled
+                and postprocess_enabled == self.postprocess_enabled
+                and postprocess_executable_path == self.postprocess_executable_path
+                and postprocess_model_path == self.postprocess_model_path
             ):
                 return
 
@@ -665,6 +770,11 @@ class OverlayGUI:
                     max_utterance_seconds,
                     debug_logging_enabled,
                 )
+                postprocess_config = self.postprocess_settings_callback(
+                    postprocess_enabled,
+                    postprocess_executable_path,
+                    postprocess_model_path,
+                )
 
                 def update_ui():
                     self.is_loading_model = False
@@ -679,21 +789,36 @@ class OverlayGUI:
                     self.current_min_utterance_seconds = runtime_config["min_utterance_seconds"]
                     self.current_max_utterance_seconds = runtime_config["max_utterance_seconds"]
                     self.debug_logging_enabled = runtime_config["debug_logging_enabled"]
+                    self.postprocess_enabled = postprocess_config["postprocess_enabled"]
+                    self.postprocess_executable_path = postprocess_config["postprocess_executable_path"]
+                    self.postprocess_model_path = postprocess_config["postprocess_model_path"]
                     model_combo.set(self.current_model)
                     device_combo.set(self.current_device)
                     source_combo.set(
                         LANGUAGE_LABELS.get(self.current_source_language, LANGUAGE_LABELS[DEFAULT_SOURCE_LANGUAGE])
                     )
                     task_combo.set(TASK_LABELS.get(self.current_task, TASK_LABELS[DEFAULT_TASK]))
+                    postprocess_enabled_var.set(self.postprocess_enabled)
+                    postprocess_executable_var.set(self.postprocess_executable_path)
+                    postprocess_model_var.set(self.postprocess_model_path)
                     sync_target_combo()
                     self.persist_settings()
 
                     if success:
                         status_label.config(
-                            text=f"Active: {active_model} ({active_device}) | {TASK_LABELS[self.current_task]}",
+                            text=(
+                                f"Active: {active_model} ({active_device}) | {TASK_LABELS[self.current_task]} | "
+                                f"Post: {postprocess_config['postprocess_state']}"
+                            ),
                             fg="green",
                         )
-                        messagebox.showinfo("Success", f"AI settings updated to {active_model} on {active_device}")
+                        if self.postprocess_enabled and postprocess_config["postprocess_state"] != "ready":
+                            messagebox.showwarning("GGUF Post-Processing", postprocess_config["postprocess_message"])
+                        else:
+                            messagebox.showinfo(
+                                "Success",
+                                f"AI settings updated to {active_model} on {active_device}",
+                            )
                     else:
                         status_label.config(
                             text=f"Loaded fallback: {active_model} ({active_device})",

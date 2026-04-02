@@ -5,10 +5,12 @@ import threading
 import time
 import queue
 from config import (
+    RAW_AUDIO_QUEUE_MAX_BLOCKS,
     TARGET_RATE,
     CHUNK_SIZE,
     INPUT_RESAMPLE_BLOCK_SECONDS,
     RESAMPLE_CONTEXT_SECONDS,
+    TRANSCRIBER_INPUT_QUEUE_MAX_BLOCKS,
 )
 
 
@@ -38,15 +40,42 @@ def probe_loopback_device():
             p.terminate()
 
 class AudioRecorder:
-    def __init__(self, audio_queue):
+    def __init__(self, audio_queue, stats_callback=None):
         self.audio_queue = audio_queue
+        self.stats_callback = stats_callback or (lambda payload: None)
         self.running = False
         self.thread = None
         self.device_channels = 1
         self.device_rate = 44100
-        self.raw_audio_queue = queue.SimpleQueue()
+        self.raw_audio_queue = queue.Queue(maxsize=RAW_AUDIO_QUEUE_MAX_BLOCKS)
         self.pending_audio = np.array([], dtype=np.float32)
         self.resample_context = np.array([], dtype=np.float32)
+        self.dropped_raw_audio_blocks = 0
+        self.dropped_transcriber_blocks = 0
+
+    def _emit_stats(self):
+        self.stats_callback(
+            {
+                "capture_queue_depth": self.raw_audio_queue.qsize(),
+                "transcriber_queue_depth": self.audio_queue.qsize(),
+                "dropped_raw_audio_blocks": self.dropped_raw_audio_blocks,
+                "dropped_transcriber_blocks": self.dropped_transcriber_blocks,
+            }
+        )
+
+    def _put_with_drop_oldest(self, target_queue, item, dropped_attr):
+        while True:
+            try:
+                target_queue.put_nowait(item)
+                self._emit_stats()
+                return
+            except queue.Full:
+                try:
+                    target_queue.get_nowait()
+                except queue.Empty:
+                    continue
+                setattr(self, dropped_attr, getattr(self, dropped_attr) + 1)
+                self._emit_stats()
 
     def get_loopback_device(self, p):
         try:
@@ -61,7 +90,7 @@ class AudioRecorder:
         if self.device_channels > 1:
             audio_data = audio_data.reshape(-1, self.device_channels).mean(axis=1)
 
-        self.raw_audio_queue.put(audio_data)
+        self._put_with_drop_oldest(self.raw_audio_queue, audio_data, "dropped_raw_audio_blocks")
         return (in_data, pyaudio.paContinue)
 
     def _drain_raw_audio(self):
@@ -101,7 +130,11 @@ class AudioRecorder:
             self.pending_audio = self.pending_audio[take:]
             resampled = self._resample_block(block)
             if len(resampled):
-                self.audio_queue.put(resampled)
+                self._put_with_drop_oldest(
+                    self.audio_queue,
+                    (resampled, int(time.time() * 1000)),
+                    "dropped_transcriber_blocks",
+                )
 
     def _record_loop(self):
         p = pyaudio.PyAudio()
@@ -129,6 +162,7 @@ class AudioRecorder:
             while self.running:
                 self._drain_raw_audio()
                 self._emit_resampled_audio()
+                self._emit_stats()
                 time.sleep(0.1)
             stream.stop_stream()
             stream.close()
@@ -137,6 +171,7 @@ class AudioRecorder:
         finally:
             self._drain_raw_audio()
             self._emit_resampled_audio(flush=True)
+            self._emit_stats()
             p.terminate()
 
     def start(self):

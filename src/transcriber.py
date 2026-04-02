@@ -7,6 +7,7 @@ import site
 import threading
 import time
 import unicodedata
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +38,7 @@ from config import (
     MAX_IDLE_BUFFER_SECONDS,
     SEGMENT_EMIT_GUARD_SECONDS,
     TARGET_RATE,
+    TRANSCRIBER_MAX_BUFFER_SECONDS,
     VAD_END_CONSECUTIVE_FRAMES,
     VAD_END_THRESHOLD_MULTIPLIER,
     VAD_FRAME_SECONDS,
@@ -145,6 +147,10 @@ class Transcriber:
         self.ambient_frame_history = []
         self.ambient_calibrated = False
         self.filtered_log_times = {}
+        self.dropped_transcription_seconds = 0.0
+        self.overload_events = 0
+        self.capture_to_commit_latency_ms = None
+        self.load_shedding_active = False
         self.model_lock = threading.Lock()
         self.flush_event = threading.Event()
         self.flush_event.set()
@@ -164,6 +170,12 @@ class Transcriber:
             "max_utterance_seconds": self.max_utterance_seconds,
             "noise_floor": self.noise_floor,
             "ambient_calibrated": self.ambient_calibrated,
+            "transcriber_queue_depth": 0,
+            "transcriber_buffer_seconds": 0.0,
+            "dropped_transcription_seconds": self.dropped_transcription_seconds,
+            "overload_events": self.overload_events,
+            "capture_to_commit_latency_ms": self.capture_to_commit_latency_ms,
+            "load_shedding_active": self.load_shedding_active,
         }
 
         self.inject_nvidia_libs()
@@ -267,6 +279,10 @@ class Transcriber:
         self.ambient_frame_history.clear()
         self.ambient_calibrated = False
         self.filtered_log_times.clear()
+        self.dropped_transcription_seconds = 0.0
+        self.overload_events = 0
+        self.capture_to_commit_latency_ms = None
+        self.load_shedding_active = False
         self._emit_status(
             runtime_state="listening",
             message="Listening for speech",
@@ -300,6 +316,12 @@ class Transcriber:
             "debug_logging_enabled": self.debug_logging_enabled,
             "noise_floor": self.noise_floor,
             "ambient_calibrated": self.ambient_calibrated,
+            "transcriber_queue_depth": self.audio_queue.qsize(),
+            "transcriber_buffer_seconds": 0.0,
+            "dropped_transcription_seconds": round(self.dropped_transcription_seconds, 3),
+            "overload_events": self.overload_events,
+            "capture_to_commit_latency_ms": self.capture_to_commit_latency_ms,
+            "load_shedding_active": self.load_shedding_active,
         }
 
     def change_model(self, model_size, device):
@@ -399,6 +421,10 @@ class Transcriber:
             self.ambient_frame_history.clear()
             self.ambient_calibrated = False
             self.filtered_log_times.clear()
+            self.dropped_transcription_seconds = 0.0
+            self.overload_events = 0
+            self.capture_to_commit_latency_ms = None
+            self.load_shedding_active = False
 
         if old_model is not None:
             del old_model
@@ -427,6 +453,8 @@ class Transcriber:
 
     def _emit_status(self, **changes):
         self.status.update(changes)
+        if "load_shedding_active" not in changes and changes.get("runtime_state") != "degraded":
+            self.status["load_shedding_active"] = False
         self.status["model_size"] = self.active_model_size
         self.status["device"] = self.active_device
         self.status["source_language"] = self.user_source_language
@@ -439,7 +467,84 @@ class Transcriber:
         self.status["max_utterance_seconds"] = self.max_utterance_seconds
         self.status["noise_floor"] = round(float(self.noise_floor), 6)
         self.status["ambient_calibrated"] = self.ambient_calibrated
+        self.status["transcriber_queue_depth"] = self.audio_queue.qsize()
+        self.status["dropped_transcription_seconds"] = round(float(self.dropped_transcription_seconds), 3)
+        self.status["overload_events"] = int(self.overload_events)
+        self.status["capture_to_commit_latency_ms"] = self.capture_to_commit_latency_ms
+        self.status["load_shedding_active"] = bool(self.status.get("load_shedding_active", False))
         self.status_callback(dict(self.status))
+
+    def _cap_audio_buffer(self, audio_buffer, buffer_start_sample, metadata=None):
+        max_buffer_samples = int(TARGET_RATE * TRANSCRIBER_MAX_BUFFER_SECONDS)
+        if len(audio_buffer) <= max_buffer_samples:
+            if metadata is None:
+                return audio_buffer, buffer_start_sample
+            return audio_buffer, buffer_start_sample, metadata
+
+        dropped_samples = len(audio_buffer) - max_buffer_samples
+        audio_buffer = audio_buffer[-max_buffer_samples:]
+        buffer_start_sample += dropped_samples
+        if metadata is not None:
+            self._drop_buffer_metadata(metadata, dropped_samples)
+        self.dropped_transcription_seconds += dropped_samples / TARGET_RATE
+        self.overload_events += 1
+        self.load_shedding_active = True
+        self._reset_current_utterance_state()
+        self._emit_status(
+            runtime_state="degraded",
+            message="Dropping stale audio backlog",
+            transcriber_buffer_seconds=round(len(audio_buffer) / TARGET_RATE, 3),
+            load_shedding_active=True,
+        )
+        self._debug_log(
+            "transcription_backlog_dropped",
+            dropped_seconds=round(dropped_samples / TARGET_RATE, 3),
+            retained_seconds=round(len(audio_buffer) / TARGET_RATE, 3),
+        )
+        if metadata is None:
+            return audio_buffer, buffer_start_sample
+        return audio_buffer, buffer_start_sample, metadata
+
+    def _normalize_audio_item(self, data):
+        if isinstance(data, tuple) and len(data) == 2:
+            audio_chunk, captured_at_ms = data
+            return np.asarray(audio_chunk, dtype=np.float32), captured_at_ms
+        return np.asarray(data, dtype=np.float32), None
+
+    def _append_buffer_metadata(self, metadata, sample_count, captured_at_ms):
+        if sample_count <= 0:
+            return
+        metadata.append([int(sample_count), captured_at_ms])
+
+    def _drop_buffer_metadata(self, metadata, sample_count):
+        remaining = max(int(sample_count), 0)
+        while remaining > 0 and metadata:
+            entry = metadata[0]
+            take = min(entry[0], remaining)
+            entry[0] -= take
+            remaining -= take
+            if entry[0] <= 0:
+                metadata.popleft()
+
+    def _consume_buffer_metadata(self, metadata, sample_count):
+        remaining = max(int(sample_count), 0)
+        capture_started_at_ms = None
+        while remaining > 0 and metadata:
+            entry = metadata[0]
+            if capture_started_at_ms is None and entry[1] is not None:
+                capture_started_at_ms = entry[1]
+            take = min(entry[0], remaining)
+            entry[0] -= take
+            remaining -= take
+            if entry[0] <= 0:
+                metadata.popleft()
+        return capture_started_at_ms
+
+    def _peek_buffer_capture_started_at_ms(self, metadata):
+        for sample_count, captured_at_ms in metadata:
+            if sample_count > 0 and captured_at_ms is not None:
+                return captured_at_ms
+        return None
 
     def _decode_language(self):
         return None if self.user_source_language == DEFAULT_SOURCE_LANGUAGE else self.user_source_language
@@ -831,7 +936,7 @@ class Transcriber:
         hypothesis_text, segment_debug = self._collect_hypothesis_segments(segments)
         return hypothesis_text, segment_debug
 
-    def _process_audio_chunk(self, audio_chunk, chunk_start_sample, is_final):
+    def _process_audio_chunk(self, audio_chunk, chunk_start_sample, is_final, capture_started_at_ms=None):
         with self.model_lock:
             active_model = self.model
 
@@ -877,6 +982,8 @@ class Transcriber:
                 self.last_preview_decode_sample = chunk_end_sample
                 if update.committed_append:
                     self.last_preview_commit_sample = chunk_end_sample
+                    if capture_started_at_ms is not None:
+                        self.capture_to_commit_latency_ms = max(int(time.time() * 1000) - capture_started_at_ms, 0)
                 if update.committed_append.strip():
                     print(f"> {update.committed_append.strip()}")
                 self._emit_status(runtime_state="listening", message="Listening for speech")
@@ -908,7 +1015,7 @@ class Transcriber:
             self._emit_status(runtime_state="error", message=f"Transcription error: {exc}")
             self._debug_log("decode_error", error=str(exc))
 
-    def _maybe_process_preview_chunk(self, audio_buffer, buffer_start_sample):
+    def _maybe_process_preview_chunk(self, audio_buffer, buffer_start_sample, capture_started_at_ms=None):
         min_preview_samples = int(TARGET_RATE * STREAMING_MIN_PREVIEW_SECONDS)
         preview_hop_samples = int(TARGET_RATE * STREAMING_PREVIEW_HOP_SECONDS)
 
@@ -916,9 +1023,14 @@ class Transcriber:
             return
         if self.last_preview_decode_sample and (buffer_start_sample + len(audio_buffer) - self.last_preview_decode_sample) < preview_hop_samples:
             return
-        self._process_audio_chunk(audio_buffer.copy(), buffer_start_sample, is_final=False)
+        self._process_audio_chunk(
+            audio_buffer.copy(),
+            buffer_start_sample,
+            is_final=False,
+            capture_started_at_ms=capture_started_at_ms,
+        )
 
-    def _flush_audio_buffer(self, audio_buffer, buffer_start_sample):
+    def _flush_audio_buffer(self, audio_buffer, buffer_start_sample, capture_started_at_ms=None):
         if len(audio_buffer) == 0:
             return np.array([], dtype=np.float32), buffer_start_sample
 
@@ -942,33 +1054,64 @@ class Transcriber:
             duration_seconds=round(len(utterance) / TARGET_RATE, 3),
             reason="flush",
         )
-        self._process_audio_chunk(utterance, buffer_start_sample, is_final=True)
+        self._process_audio_chunk(
+            utterance,
+            buffer_start_sample,
+            is_final=True,
+            capture_started_at_ms=capture_started_at_ms,
+        )
         return np.array([], dtype=np.float32), buffer_start_sample + end_sample
 
     def _transcribe_loop(self):
         audio_buffer = np.array([], dtype=np.float32)
+        audio_buffer_metadata = deque()
         buffer_start_sample = 0
         while self.running:
             try:
                 data = self.audio_queue.get(timeout=1)
                 if data is None:
-                    audio_buffer, buffer_start_sample = self._flush_audio_buffer(audio_buffer, buffer_start_sample)
+                    audio_buffer, buffer_start_sample = self._flush_audio_buffer(
+                        audio_buffer,
+                        buffer_start_sample,
+                        capture_started_at_ms=self._peek_buffer_capture_started_at_ms(audio_buffer_metadata),
+                    )
+                    audio_buffer_metadata.clear()
                     self.flush_event.set()
                     continue
-                audio_buffer = np.concatenate((audio_buffer, data))
+                audio_chunk, captured_at_ms = self._normalize_audio_item(data)
+                audio_buffer = np.concatenate((audio_buffer, audio_chunk))
+                self._append_buffer_metadata(audio_buffer_metadata, len(audio_chunk), captured_at_ms)
+                audio_buffer, buffer_start_sample, audio_buffer_metadata = self._cap_audio_buffer(
+                    audio_buffer,
+                    buffer_start_sample,
+                    metadata=audio_buffer_metadata,
+                )
+                self.status["transcriber_buffer_seconds"] = round(len(audio_buffer) / TARGET_RATE, 3)
 
                 while self.running:
                     utterance, consumed_samples, audio_buffer = self._find_utterance_boundary(audio_buffer)
+                    self.status["transcriber_buffer_seconds"] = round(len(audio_buffer) / TARGET_RATE, 3)
                     if consumed_samples and utterance is None:
+                        self._consume_buffer_metadata(audio_buffer_metadata, consumed_samples)
                         buffer_start_sample += consumed_samples
                         self._reset_current_utterance_state()
                     if utterance is None:
                         if len(audio_buffer):
-                            self._maybe_process_preview_chunk(audio_buffer, buffer_start_sample)
+                            self._maybe_process_preview_chunk(
+                                audio_buffer,
+                                buffer_start_sample,
+                                capture_started_at_ms=self._peek_buffer_capture_started_at_ms(audio_buffer_metadata),
+                            )
                         break
                     chunk_start_sample = buffer_start_sample
+                    chunk_capture_started_at_ms = self._consume_buffer_metadata(audio_buffer_metadata, consumed_samples)
                     buffer_start_sample += consumed_samples
-                    self._process_audio_chunk(utterance, chunk_start_sample, is_final=True)
+                    self._process_audio_chunk(
+                        utterance,
+                        chunk_start_sample,
+                        is_final=True,
+                        capture_started_at_ms=chunk_capture_started_at_ms,
+                    )
             except queue.Empty:
                 continue
             except Exception as exc:
@@ -1071,15 +1214,30 @@ class Transcriber:
         self.thread = threading.Thread(target=self._transcribe_loop, daemon=True)
         self.thread.start()
 
+    def _enqueue_control_signal(self, signal):
+        while True:
+            try:
+                self.audio_queue.put_nowait(signal)
+                return
+            except queue.Full:
+                try:
+                    dropped = self.audio_queue.get_nowait()
+                except queue.Empty:
+                    continue
+                if dropped is not None:
+                    dropped_audio, _ = self._normalize_audio_item(dropped)
+                    self.overload_events += 1
+                    self.dropped_transcription_seconds += len(dropped_audio) / TARGET_RATE
+
     def flush(self, timeout=None):
         self.flush_event.clear()
-        self.audio_queue.put(None)
+        self._enqueue_control_signal(None)
         return self.flush_event.wait(timeout=timeout)
 
     def stop(self):
         if self.running:
             self.flush(timeout=1.0)
         self.running = False
-        self.audio_queue.put(None)
+        self._enqueue_control_signal(None)
         if self.thread:
             self.thread.join()
